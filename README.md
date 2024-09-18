@@ -1,5 +1,3 @@
-from distutils.dep_util import newer
-
 # constrata
 
 An efficient Python library for parsing and building binary data structures based on the built-in `dataclasses` module,
