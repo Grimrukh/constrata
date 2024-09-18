@@ -1,10 +1,17 @@
 [tool.poetry]
 name = "constrata"
 version = "1.0.0"
-description = "Feature-rich binary struct reading/writing Python library based on dataclass schemas"
+description = "Binary struct reading/writing Python library based on dataclass schemas"
 authors = ["Scott Mooney <grimrukh@gmail.com>"]
 license = "MIT"
 readme = "README.md"
+homepage = "https://github.com/Grimrukh/constrata"
+repository = "https://github.com/Grimrukh/constrata"
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+]
 packages = [
     { include = "constrata" },
 ]
