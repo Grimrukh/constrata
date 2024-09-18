@@ -81,7 +81,7 @@ def read_chars_from_buffer(
         buffer = io.BytesIO(buffer)
     chars = []
     old_offset = None
-    bytes_per_char = 2 if encoding is not None and encoding.replace("-", "").startswith("utf16le") else 1
+    bytes_per_char = 2 if encoding is not None and encoding.replace("-", "").startswith("utf16") else 1
     terminator = b"\0" * bytes_per_char
 
     if offset is not None:

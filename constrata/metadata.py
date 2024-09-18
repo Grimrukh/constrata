@@ -11,6 +11,7 @@ import dataclasses
 import typing as tp
 
 from constrata.field_types.type_info import PRIMITIVE_FIELD_TYPING
+from constrata.exceptions import BinaryFieldValueError
 
 FIELD_T = tp.TypeVar("FIELD_T")  # can be any type thanks to `unpack_func` option
 
