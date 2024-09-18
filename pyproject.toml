@@ -1,0 +1,17 @@
+[tool.poetry]
+name = "constrata"
+version = "1.0.0"
+description = "Feature-rich binary struct reading/writing Python library based on dataclass schemas"
+authors = ["Scott Mooney <grimrukh@gmail.com>"]
+license = "MIT"
+readme = "README.md"
+packages = [
+    { include = "constrata" },
+]
+
+[tool.poetry.dependencies]
+python = "^3.11"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
