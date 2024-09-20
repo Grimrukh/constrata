@@ -220,9 +220,14 @@ class BinaryStruct:
                 long_varints = data.long_varints
             # Otherwise, leave as `None` and allow errors to occur if varint fields are found.
 
-        if isinstance(data, (bytes, bytearray)):
-            reader = BinaryReader(data)
-        elif isinstance(data, (io.BufferedIOBase, BinaryReader)):
+        old_byte_order = None
+        if isinstance(data, (bytes, bytearray, io.BufferedIOBase)):
+            # Transient reader; we can set the byte order directly.
+            reader = BinaryReader(data, default_byte_order=byte_order)
+        elif isinstance(data, BinaryReader):
+            # Save old byte order if it is different.
+            if byte_order != data.default_byte_order:
+                old_byte_order = data.default_byte_order
             reader = data  # assumes it is at the correct offset already
         else:
             raise TypeError("`data` must be `bytes`, `bytearray`, or opened `io.BufferedIOBase`.")
@@ -306,6 +311,10 @@ class BinaryStruct:
         instance.long_varints = long_varints
         for field_name, value in non_init_values.items():
             setattr(instance, field_name, value)
+
+        # Restore old byte order if it was changed from a passed-in `BinaryReader`.
+        if old_byte_order is not None:
+            reader.default_byte_order = old_byte_order
 
         return instance
 
@@ -453,7 +462,9 @@ class BinaryStruct:
         """Calls `to_bytes()` without the ability to change byte order or varint size."""
         return self.to_bytes()
 
-    def to_writer(self, writer: BinaryWriter = None, reserve_obj: OBJ_T = None) -> BinaryWriter:
+    def to_writer(
+        self, writer: BinaryWriter = None, reserve_obj: OBJ_T = None, byte_order: ByteOrder = None
+    ) -> BinaryWriter:
         """Use fields to pack this instance into a `BinaryWriter`, which may be given or started automatically.
 
         Any non-auto-computed fields whose values are `None` will be left as reserved keys in the writer of format:
@@ -469,10 +480,26 @@ class BinaryStruct:
         if reserve_obj is None:
             reserve_obj = self
 
-        if self.byte_order is None:
-            byte_order = self.get_default_byte_order() if writer is None else writer.default_byte_order
-        else:
-            byte_order = self.byte_order
+        # Preference for byte order: argument, `self`, `writer`, or `get_default_byte_order()`.
+        old_byte_order = None
+        if byte_order is None:
+            if self.byte_order is not None:
+                byte_order = self.byte_order
+            elif writer is not None:
+                byte_order = writer.default_byte_order
+            else:
+                byte_order = self.get_default_byte_order()
+
+            # Warn about byte order override (from struct or default).
+            if writer is not None:
+                if writer.default_byte_order != byte_order:
+                    _LOGGER.warning(
+                        f"Existing writer passed to `{self.cls_name}.to_writer()` has default byte order "
+                        f"{writer.default_byte_order}, but this struct wants to use {byte_order}. Using this struct's "
+                        f"byte order temporarily."
+                    )
+                    old_byte_order = writer.default_byte_order
+                    writer.default_byte_order = byte_order
 
         if self.long_varints is None and writer is not None:
             long_varints = writer.long_varints
@@ -481,14 +508,7 @@ class BinaryStruct:
             # raised if any `varint` or `varuint` fields are encountered.
             long_varints = self.long_varints
 
-        if writer is not None:
-            if writer.default_byte_order != byte_order:
-                _LOGGER.warning(
-                    f"Existing writer passed to `{self.cls_name}.to_writer()` has default byte order "
-                    f"{writer.default_byte_order}, but this class wants to use {byte_order}. Using this class's byte "
-                    f"order.")
-                writer.default_byte_order = byte_order
-        else:
+        if writer is None:
             writer = BinaryWriter(byte_order)  # NOTE: `BinaryWriter.long_varints` not used here
 
         cls_name = self.cls_name
@@ -569,6 +589,9 @@ class BinaryStruct:
                 f"    Struct input: {struct_input}"
             )
             raise
+
+        if old_byte_order is not None:
+            writer.default_byte_order = byte_order
 
         return writer  # may have remaining unfilled fields (any non-auto-computed field with value `None`)
 
