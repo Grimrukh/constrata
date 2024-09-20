@@ -19,7 +19,7 @@ def long_varints_from_reader_peek(
         raise ValueError(f"Could not determine `long_varints` from bytes: {peeked}")
 
 
-def read_chars_from_bytes(data, offset=0, length=None, encoding=None) -> bytes | str:
+def read_chars_from_bytes(data, length=None, offset=0, encoding=None) -> bytes | str:
     """Read characters from a bytes object (an encoded string). Use 'read_chars_from_buffer' if you are using a buffer.
 
     If 'length=None' (default), characters will be read until null termination from the given offset. Otherwise,
@@ -50,8 +50,8 @@ def read_chars_from_bytes(data, offset=0, length=None, encoding=None) -> bytes |
 
 def read_chars_from_buffer(
     buffer: io.BufferedIOBase,
-    offset: int = None,
     length: int = None,
+    offset: int = None,
     reset_old_offset=True,
     encoding: str = None,
     strip=True,
@@ -60,12 +60,12 @@ def read_chars_from_buffer(
 
     Args:
         buffer (io.BufferedIOBase): byte-format data stream to read from.
-        offset: offset to `seek()` in buffer before starting to read characters. Defaults to current offset (None).
-        reset_old_offset: if True, and 'offset' is not None, the buffer offset will be restored to its original position
-            (at function call time) before returning. (Default: True)
         length: number of characters to read (i.e. the length of the returned string). If None (default), characters
             will be read until a null termination is encountered. Otherwise, if a length is specified, any spaces at
             the end of the string will be stripped, then any nulls at the end will be stripped.
+        offset: offset to `seek()` in buffer before starting to read characters. Defaults to current offset (None).
+        reset_old_offset: if True, and 'offset' is not None, the buffer offset will be restored to its original position
+            (at function call time) before returning. (Default: True)
         encoding: attempt to decode characters in this encoding before returning. If 'utf-16-*' is specified, this
             function will infer that characters are two bytes long (and null terminations will be two bytes). Otherwise,
             it assumes they are one byte long. You can decode the characters yourself if you want to use another

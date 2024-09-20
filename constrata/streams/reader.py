@@ -8,6 +8,7 @@ import io
 import struct
 import typing as tp
 from contextlib import contextmanager
+from functools import lru_cache
 from pathlib import Path
 
 from constrata.utilities import read_chars_from_buffer
@@ -70,11 +71,11 @@ class BinaryReader(BinaryBase):
             (tuple) Output of `struct.unpack()`.
         """
         fmt = self.parse_fmt(fmt)
+        fmt_size = self.calcsize(fmt)
 
         initial_offset = self.buffer.tell() if offset is not None else None
         if offset is not None:
             self.buffer.seek(initial_offset + offset if relative_offset else offset)
-        fmt_size = struct.calcsize(fmt)
         raw_data = self.buffer.read(fmt_size)
         if not raw_data and fmt_size > 0:
             raise ValueError(f"Could not unpack {fmt_size} bytes from reader for format '{fmt}'.")
@@ -118,24 +119,32 @@ class BinaryReader(BinaryBase):
 
     def unpack_bytes(
         self,
-        offset: int = None,
         length: int = None,
+        offset: int = None,
         reset_old_offset=True,
         strip=True,
+        asserted: bytes | None = None,
     ) -> bytes:
         """Read bytes (null-terminated if `length` is not given) from given `offset` (defaults to current).
 
         See `read_chars_from_buffer()` for more.
         """
-        return read_chars_from_buffer(self.buffer, offset, length, reset_old_offset, encoding=None, strip=strip)
+        try:
+            s = read_chars_from_buffer(self.buffer, length, offset, reset_old_offset, encoding=None, strip=strip)
+        except struct.error as ex:
+            raise self.ReaderError(f"Could not unpack bytes. Error: {ex}")
+        if asserted is not None and s != asserted:
+            raise AssertionError(f"Unpacked bytes {s} do not equal asserted bytes {asserted}.")
+        return s
 
     def unpack_string(
         self,
-        offset: int = None,
         length: int = None,
+        offset: int = None,
         reset_old_offset=True,
         encoding="utf-8",
         strip=True,
+        asserted: bytes | str | None = None,
     ) -> str:
         """Read string (null-terminated if `length` is not given) from given `offset` (defaults to current).
 
@@ -143,9 +152,14 @@ class BinaryReader(BinaryBase):
         null terminator is required. See `read_chars_from_buffer()` for more.
         """
         try:
-            return read_chars_from_buffer(self.buffer, offset, length, reset_old_offset, encoding=encoding, strip=strip)
+            s = read_chars_from_buffer(self.buffer, length, offset, reset_old_offset, encoding=encoding, strip=strip)
         except struct.error as ex:
             raise self.ReaderError(f"Could not unpack string. Error: {ex}")
+        if asserted is not None and s != asserted:
+            if encoding is not None:
+                raise AssertionError(f"Unpacked string {repr(s)} does not equal asserted string {repr(asserted)}.")
+            raise AssertionError(f"Unpacked bytes {s} do not equal asserted bytes {asserted}.")
+        return s
 
     def read(self, size: int = None, offset: int = None) -> bytes:
         if offset is not None:
@@ -205,6 +219,12 @@ class BinaryReader(BinaryBase):
     @property
     def position_hex(self) -> str:
         return hex(self.buffer.tell())
+
+    @staticmethod
+    @lru_cache(maxsize=256)
+    def calcsize(parsed_fmt: str):
+        """LRU-decorated method for calculating struct size after parsing it."""
+        return struct.calcsize(parsed_fmt)
 
     def print_labeled_position(self, label: str, as_hex=False):
         print(f"{label} position: {self.position_hex if as_hex else self.position}")
