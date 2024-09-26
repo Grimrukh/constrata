@@ -54,7 +54,7 @@ class BinaryWriter(BinaryBase):
 
     def pad_to_offset(self, offset: int, char=b"\0"):
         if self.position > offset:
-            raise ValueError(f"Writer is already past offset {offset}: {self.position}")
+            raise ValueError(f"Writer is already past offset {hex(offset)}: {self.position_hex}")
         self.pad(offset - self.position, char=char)
 
     def pad_align(self, alignment: int, char=b"\0"):
