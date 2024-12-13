@@ -16,6 +16,7 @@ from constrata.byte_order import ByteOrder
 from constrata.field_types.type_info import *
 from constrata.exceptions import BinaryFieldTypeError, BinaryFieldValueError
 from constrata.metadata import FIELD_T, BinaryMetadata, BinaryArrayMetadata
+from constrata.metacls import BinaryStructMeta
 from constrata.streams import BinaryReader, BinaryWriter, BitFieldReader, BitFieldWriter
 
 _LOGGER = logging.getLogger("constrata")
@@ -24,8 +25,7 @@ _LOGGER = logging.getLogger("constrata")
 OBJ_T = tp.TypeVar("OBJ_T")
 
 
-@dataclasses.dataclass(slots=True)
-class BinaryStruct:
+class BinaryStruct(metaclass=BinaryStructMeta):
     """Dataclass that supports automatic reading/writing from packed binary data."""
 
     # Caches for class binary information, each constructed on first use.
@@ -44,11 +44,12 @@ class BinaryStruct:
     # to a list of primitive values supported by `struct.pack()` (e.g. such that `pack(*v3) == pack(v3.x, v3.y, v3.z)`).
     METADATA_FACTORIES: tp.ClassVar[dict[str, tp.Callable[[], BinaryMetadata]]] = {}
 
-    # Set by `from_bytes()` class method, or can be manually set.
-    # Will be auto-detected from values with `get_byte_order()` (defaulting to `LittleEndian`) if not defined, e.g.
-    # by a manually-constructed instance.
-    byte_order: None | ByteOrder = dataclasses.field(init=False, repr=False, default=None)
-    long_varints: None | bool = dataclasses.field(init=False, repr=False, default=None)
+    # Subclasses can set their own default byte order, which defaults to LittleEndian here.
+    DEFAULT_BYTE_ORDER: tp.ClassVar[ByteOrder] = ByteOrder.LittleEndian
+    # There is no class default for `long_varints`. Any structs that uses these must specify it explicitly with an
+    # argument or via a passed-in `BinaryWriter`.
+
+    # No instance fields in this base class.
 
     def __init_subclass__(cls, **kwargs) -> None:
         if "unpackers" in kwargs:
@@ -65,11 +66,6 @@ class BinaryStruct:
         for field, field_metadata in zip(self._FIELDS, self._FIELD_METADATA, strict=True):
             if field_metadata.single_asserted is not None:
                 setattr(self, field.name, field_metadata.single_asserted)
-
-        if not hasattr(self, "byte_order"):
-            self.byte_order = None
-        if not hasattr(self, "long_varints"):
-            self.long_varints = None
 
     @property
     def cls_name(self):
@@ -208,12 +204,15 @@ class BinaryStruct:
         if byte_order is None:
             if isinstance(data, BinaryReader):
                 byte_order = data.default_byte_order
-            else:  # default
-                byte_order = ByteOrder.LittleEndian
+            else:
+                byte_order = cls.DEFAULT_BYTE_ORDER
         elif isinstance(byte_order, str):
             byte_order = ByteOrder(byte_order)
         elif not isinstance(byte_order, ByteOrder):
-            raise ValueError(f"Invalid `byte_order`: {byte_order}")
+            raise ValueError(
+                f"Invalid `byte_order`: {byte_order}. Must be a `ByteOrder`, value of such (e.g. '<'), or `None` "
+                f"to use the class default."
+            )
 
         if long_varints is None:
             if isinstance(data, BinaryReader):
@@ -307,8 +306,6 @@ class BinaryStruct:
 
         # noinspection PyArgumentList
         instance = cls(**init_values)
-        instance.byte_order = byte_order
-        instance.long_varints = long_varints
         for field_name, value in non_init_values.items():
             setattr(instance, field_name, value)
 
@@ -357,8 +354,6 @@ class BinaryStruct:
     def from_object(
         cls,
         obj: OBJ_T,
-        byte_order: ByteOrder = None,
-        long_varints: bool = None,
         **field_values,
     ):
         """Create an instance by reading getting field values directly from the attributes of `obj`, with additional
@@ -383,8 +378,6 @@ class BinaryStruct:
 
         # noinspection PyArgumentList
         binary_struct = cls(**field_values)
-        binary_struct.byte_order = byte_order
-        binary_struct.long_varints = long_varints
         return binary_struct
 
     @classmethod
@@ -403,14 +396,14 @@ class BinaryStruct:
         **field_values,
     ) -> BinaryWriter:
         """Convenience shortcut for creating a struct instance from `obj` and `field_values`, then immediately calling
-        `to_writer(writer, reserve_obj=obj)` with that struct.
+        `to_writer(writer, reserve_obj=obj, byte_order=byte_order, long_varints=long_varints)` with that struct.
         """
         if byte_order is None and writer is not None:
             byte_order = writer.default_byte_order
         if long_varints is None and writer is not None:
             long_varints = writer.long_varints
-        binary_struct = cls.from_object(obj, byte_order=byte_order, long_varints=long_varints, **field_values)
-        return binary_struct.to_writer(writer, reserve_obj=obj)
+        binary_struct = cls.from_object(obj, **field_values)
+        return binary_struct.to_writer(writer, reserve_obj=obj, byte_order=byte_order, long_varints=long_varints)
 
     def to_object(self, obj_type: type[OBJ_T], **init_kwargs) -> OBJ_T:
         """Initialize `obj_type` instance by automatically adding field names to `init_kwargs`.
@@ -446,11 +439,12 @@ class BinaryStruct:
 
         You can call simply `bytes(binary_struct)` if you do not need to change the byte order or varint size.
         """
-        if byte_order is not None:
-            self.byte_order = byte_order
-        if long_varints is not None:
-            self.long_varints = long_varints
-        writer = self.to_writer()
+        writer = self.to_writer(
+            writer=None,
+            reserve_obj=None,
+            byte_order=byte_order,
+            long_varints=long_varints,
+        )
         if writer.reserved:
             raise ValueError(
                 f"`{self.cls_name}` BinaryStruct cannot fill all fields on its own. Use `to_writer()`.\n"
@@ -463,7 +457,11 @@ class BinaryStruct:
         return self.to_bytes()
 
     def to_writer(
-        self, writer: BinaryWriter = None, reserve_obj: OBJ_T = None, byte_order: ByteOrder = None
+        self,
+        writer: BinaryWriter = None,
+        reserve_obj: OBJ_T = None,
+        byte_order: ByteOrder = None,
+        long_varints: bool = None,
     ) -> BinaryWriter:
         """Use fields to pack this instance into a `BinaryWriter`, which may be given or started automatically.
 
@@ -480,15 +478,13 @@ class BinaryStruct:
         if reserve_obj is None:
             reserve_obj = self
 
-        # Preference for byte order: argument, `self`, `writer`, or `get_default_byte_order()`.
+        # Preference for byte order: argument, passed-in `writer`, or `cls.DEFAULT_BYTE_ORDER`.
         old_byte_order = None
         if byte_order is None:
-            if self.byte_order is not None:
-                byte_order = self.byte_order
-            elif writer is not None:
+            if writer is not None:
                 byte_order = writer.default_byte_order
             else:
-                byte_order = self.get_default_byte_order()
+                byte_order = self.DEFAULT_BYTE_ORDER
 
             # Warn about byte order override (from struct or default).
             if writer is not None:
@@ -501,12 +497,10 @@ class BinaryStruct:
                     old_byte_order = writer.default_byte_order
                     writer.default_byte_order = byte_order
 
-        if self.long_varints is None and writer is not None:
+        if long_varints is None and writer is not None:
             long_varints = writer.long_varints
-        else:
-            # `long_varints` may be left as None (e.g. for formats that do not care about it) but an error will be
-            # raised if any `varint` or `varuint` fields are encountered.
-            long_varints = self.long_varints
+        # `long_varints` may be left as None (e.g. for formats that do not care about it) but an error will be raised
+        # if any `varint` or `varuint` fields are encountered.
 
         if writer is None:
             writer = BinaryWriter(byte_order)  # NOTE: `BinaryWriter.long_varints` not used here
@@ -651,14 +645,6 @@ class BinaryStruct:
         z = b"\0\0" if encoding.startswith("utf-16") else b"\0"
         writer.append(value.encode(encoding) + z)
 
-    def get_default_byte_order(self) -> ByteOrder:
-        """Utility for subclasses to indicate their own default `byte_order`.
-
-        Called on pack if `self.byte_order` is not already assigned. This base method also logs a warning.
-        """
-        _LOGGER.warning(f"Byte order defaulting to `LittleEndian` for `{self.cls_name}`.")
-        return ByteOrder.LittleEndian
-
     def repr_multiline(self) -> str:
         """Only includes binary fields with non-default values."""
         lines = [
@@ -690,8 +676,7 @@ class BinaryStruct:
             return cls._FIELDS
         cls._FIELDS = tuple(
             field for field in dataclasses.fields(cls)
-            if field.name not in {"byte_order", "long_varints"}
-            and not field.metadata.get("NOT_BINARY", False)
+            if not field.metadata.get("NOT_BINARY", False)
         )
         return cls._FIELDS
 
@@ -715,13 +700,14 @@ class BinaryStruct:
         raise KeyError(f"Invalid field for `{cls.__name__}`: {field_name}")
 
     @classmethod
-    def get_size(cls, byte_order: ByteOrder = ByteOrder.LittleEndian, long_varints: bool = None) -> int:
+    def get_size(cls, byte_order: ByteOrder = None, long_varints: bool = None) -> int:
         """Get full format of this struct, then calculate its size using the given `byte_order` and `long_varints`.
 
         `byte_order` will default to `LittleEndian`; only a change to `NativeAutoAligned` would potentially change the
         size of the struct, which is unlikely for game formats. `long_varints` may be omitted, but an error will be
         raised if any `varint` or `varuint` fields are used in the struct.
         """
+        byte_order = byte_order or cls.DEFAULT_BYTE_ORDER
         full_fmt = byte_order.value + cls.get_full_fmt()
         if "v" in full_fmt or "V" in full_fmt:
             if long_varints is None:

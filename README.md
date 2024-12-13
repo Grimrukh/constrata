@@ -13,39 +13,59 @@ pip install constrata
 
 ## Usage
 
-Use `dataclasses.dataclass` and `dataclasses.field` as you normally would to define a subclass of 
-`constrata.BinaryStruct`, and specify the binary format, size, asserted values, and unpacking/packing functions of 
-fields using `constrata` 'metadata' constructors. Many of these fields can be determined automatically by `constrata` 
-based on the field type hint, and custom metadata factories can be added to expand the range of such automatic support. 
+Define a subclass of `constrata.BinaryStruct`, and specify the binary format, size, asserted values, and 
+unpacking/packing functions of fields using `constrata` field functions with these basic arguments:
+- `binary(fmt, asserted)`
+- `binary_string(fmt_or_byte_size, asserted, encoding)`
+- `binary_array(length, element_format, asserted)`
+- `binary_pad(length, char = b'\0')`
 
-Usage of the genuine `dataclasses.field` with double-asterisk metadata arguments like `**Binary()` is recommended if you
-want your IDE to continue detecting field types and default values for `__init__` (e.g. in PyCharm) -- but you can
-equivalently use full `field` wrappers such as `binary()` for cleaner code and automatic `init=False` arguments for
-asserted fields (but IDE dataclass support may break).
+Each of these field functions also have other advanced arguments, such as custom unpacking/packing callbacks
+(`unpack_func` and `pack_func`), conditional field skipping based on the values of previous fields (`should_skip_func`),
+and `rstrip_null` boolean for `binary_string()`. 
 
-`BinaryStruct` subclasses **must use the `@dataclass` wrapper**. They do not require `slots=True`, but as these classes
-are intended to represent binary data structures and should never have undefined fields anyway, there is NO reason not 
-to take the performance gain here.
+All of these functions also accept standard keyword arguments for `dataclasses.field()` and pass them through directly.
+Additionally, if only a single value is `asserted` (which is always the case for `binary_pad()`), then `init=False` and
+`default=asserted` will be passed through to `field()` by default. However, your IDE (e.g. PyCharm) may not be able to
+detect these arguments; if this interferes with constructor usage, you can just specify these keywords explicitly.
+
+Alternatively, you can use `dataclasses.field()` directly and pass in double-asterisk metadata generators `**Binary()`,
+`**BinaryString()`, `**BinaryArray()`, and `**BinaryPad()`. This has the exact same effect as using the `constrata`
+field functions above. (These capitalised functions return a dictionary with a single key, 'metadata', which a double
+asterisk will unpack as a keyword into the `field()` call, which looks slightly nicer and more compact than having to
+pass `metadata=Binary(...)` to all the fields.) However, since Python 3.11 introduced `typing.dataclass_transform`
+(which the base `BinaryStruct` uses to reveal its automatic `dataclass` wrapper to IDEs), your IDE should be able to
+see that the standard functions like `binary()` function as `field()` wrappers.
+
+Rather than using `unpack_func` and `pack_func` in every field, you can also create an instance of `BinaryMetadata` or
+`BinaryArrayMetadata` to support your custom classes (e.g. a `Vector3` class) and add them to the `METADATA_FACTORIES`
+attribute of your `BinaryStruct` subclass (or an intermediate class that all of your `Vector3`-using structs can
+inherit from). This allows direct use of your custom class as a type hint in a `BinaryStruct` with no field call needed
+at all (unless you want to set a default, assert values, etc.). See the examples below.
+
+`BinaryStruct` subclasses **have `dataclass(slots=True)` wrapping built in to their metaclass.** You must not add an
+additional `dataclass` decorator yourself, with or without `slots`, as this will cause the binary field metadata to be
+lost.
 
 ## Basic Example
 
 ```python
-from dataclasses import dataclass, field
-from constrata import BinaryStruct, Binary, BinaryString, BinaryArray, BinaryPad
+from constrata.binary_struct import BinaryStruct
+from constrata.fields import *
 from constrata.field_types import *
 
-@dataclass(slots=True)
+
 class MyStruct(BinaryStruct):
     my_int32: int
     my_uint64: uint64
     my_single: float32
-    my_double: float64 = field(**Binary(asserted=(1.0, 2.0, 3.0)))  # only three permitted values
-    _padding: bytes = field(init=False, **BinaryPad(8))
-    my_ascii_string: str = field(**BinaryString(12, encoding="ascii"))
-    my_eight_bools: list[bool] = field(default_factory=lambda: [False] * 8, **BinaryArray(8))
-    my_bitflag1: bool = field(default=False, **Binary(bit_count=1))
-    my_bitflag2: bool = field(default=True, **Binary(bit_count=1))
-    # Six unused bits in byte skipped here (and must be 0).
+    my_double: float64 = binary(asserted=(1.0, 2.0, 3.0))  # only three permitted values
+    _padding: bytes = binary_pad(8)
+    my_ascii_string: str = binary_string(12, encoding="ascii")
+    my_eight_bools: list[bool] = binary_array(8, default_factory=lambda: [False] * 8)
+    my_bitflag1: bool = binary(bit_count=1, default=False)
+    my_bitflag2: bool = binary(bit_count=1, default=True)
+    # Six unused bits in byte skipped here (and must all be 0).
 
 # Read from a file.
 bin_path = "my_struct.bin"
@@ -66,27 +86,6 @@ with open(new_bin_path, "wb") as f:
 new_struct = MyStruct(0, 0, 0.0, 1.0, my_ascii_string="helloworld")
 ```
 
-An identical `MyStruct` can be defined using direct `dataclasses.field` wrappers:
-
-```python
-from dataclasses import dataclass
-from constrata import BinaryStruct, binary, binary_string, binary_array, binary_pad
-from constrata.field_types import *
-
-@dataclass(slots=True)
-class MyStruct(BinaryStruct):
-    my_int32: int
-    my_uint64: uint64
-    my_single: float32
-    my_double: float64 = binary(asserted=(1.0, 2.0, 3.0))  # only three permitted values
-    _padding: bytes = binary_pad(8)  # `init=False` is automatic
-    my_ascii_string: str = binary_string(12, encoding="ascii")
-    my_eight_bools: list[bool] = binary_array(8, default_factory=lambda: [False] * 8)
-    my_bitflag1: bool = binary(default=False, bit_count=1)
-    my_bitflag2: bool = binary(default=True, bit_count=1)
-    # Six unused bits in byte skipped here (and must be 0).
-```
-
 ## Reserving and Filling Fields
 
 The flexible `BinaryReader` and `BinaryWriter` classes can also serve as useful tools for managing binary IO streams.
@@ -105,12 +104,10 @@ If any reserved fields are not filled before the final conversion of the writer 
 Example:
 
 ```python
-from __future__ import annotations
-
-from dataclasses import dataclass, field
 from typing import NamedTuple
-from constrata import BinaryStruct, BinaryString, BinaryReader, BinaryWriter, RESERVED
+from constrata import BinaryStruct, binary_string, BinaryReader, BinaryWriter, RESERVED
 from constrata.field_types import float32
+
 
 class Vector(NamedTuple):
     name: str
@@ -118,15 +115,15 @@ class Vector(NamedTuple):
     y: float
     z: float
 
-@dataclass(slots=True)
+    
 class VectorListHeader(BinaryStruct):
-    magic: bytes = field(init=False, **BinaryString(4, asserted=b"VEC\0"))
+    magic: bytes = binary_string(4, asserted=b"VEC\0")
     vector_count: int
     names_offset: int  # offset to packed null-terminated vector name data
     data_offset: int  # offset to packed (x, y, z) vector float data
     file_size: int  # total file size in bytes
 
-@dataclass(slots=True)
+
 class VectorData(BinaryStruct):
     x: float32
     y: float32
@@ -161,6 +158,8 @@ vectors.append(Vector("new_vector", 1.0, 2.0, 3.0))
 # To pack our `Vector` list, we can use the `BinaryWriter` class and `RESERVED` value.
 writer = BinaryWriter()
 new_header = VectorListHeader(
+    # `magic` has `init=False` and `default=b"VEC\0"` set automatically.
+    # If your IDE complains about this and wants to see the `magic` keyword, you can add those arguments explicitly.
     vector_count=len(vectors),
     names_offset=RESERVED,
     data_offset=RESERVED,
@@ -211,7 +210,7 @@ with open(new_bin_path, "wb") as f:
 
 ## Custom Metadata Factories
 
-By default, you can only omit `field(**Binary(...))` metadata when the field type hint is a built-in type with a known
+By default, you can only omit binary metadata when the field type hint is a built-in type with a known
 size. You can extend this support by adding custom metadata factories to `BinaryStruct.METADATA_FACTORIES`, most easily
 done with a subclass.
 
@@ -221,9 +220,10 @@ this case, since the `name` field of each `Vector` must be changed after object 
 it instead of an immutable `NamedTuple`.)
 
 ```python
-from dataclasses import dataclass, field
-from constrata import BinaryStruct, Binary
+from dataclasses import dataclass
+from constrata import BinaryStruct, binary
 from constrata.metadata import BinaryMetadata
+
 
 @dataclass(slots=True)
 class Vector:
@@ -237,6 +237,7 @@ def unpack_vector(values: list[float]) -> Vector:
     """Name will be set later. The field metadata will have already read three floats (see below)."""
     return Vector("", *values)
 
+
 def pack_vector(value: Vector) -> list[float]:
     """This function must convert the custom type to a list of values that can be packed with `struct.pack()`.
     
@@ -247,19 +248,18 @@ def pack_vector(value: Vector) -> list[float]:
     """
     return [value.x, value.y, value.z]
 
+
 # As binary metadata is powerful, we could support `Vector` as a field type by specifying its format and unpack/pack
 # functions, but we would have to do this every time it appeared:
 
-@dataclass(slots=True)
 class VectorData(BinaryStruct):
-    vector: Vector = field(**Binary("3f", unpack_func=unpack_vector, pack_func=pack_vector))
+    vector: Vector = binary("3f", unpack_func=unpack_vector, pack_func=pack_vector)
     name_offset: int
     next_vector_offset: int
 
 # Since `Vector` may appear in many structs, we can define a custom metadata factory for it in a new `BinaryStruct`
 # subclass, and use that subclass in place of `BinaryStruct` in our code:    
     
-@dataclass(slots=True)
 class EnhancedBinaryStruct(BinaryStruct):
     
     METADATA_FACTORIES = {
@@ -268,8 +268,7 @@ class EnhancedBinaryStruct(BinaryStruct):
 
 # Now we can use `Vector` fields in our `EnhancedBinaryStruct` subclasses across all of our code, including:
 
-@dataclass(slots=True)
-class VectorData(EnhancedBinaryStruct):
+class VectorData_Enhanced(EnhancedBinaryStruct):
     vector: Vector  # replaces `x`, `y`, `z` separate fields; no `field()` call needed here!
     name_offset: int
     next_vector_offset: int

@@ -11,7 +11,6 @@ import dataclasses
 import typing as tp
 
 from constrata.field_types.type_info import PRIMITIVE_FIELD_TYPING
-from constrata.exceptions import BinaryFieldValueError
 
 FIELD_T = tp.TypeVar("FIELD_T")  # can be any type thanks to `unpack_func` option
 
@@ -31,10 +30,13 @@ class BinaryMetadata(tp.Generic[FIELD_T]):
     single_asserted: FIELD_T | None = dataclasses.field(init=False, default=None)
 
     # Assigned by `BinaryStruct` to allow better error logging below. (NOT used otherwise.)
-    field_name: str = dataclasses.field(default=None, init=False)
+    field_name: str = dataclasses.field(default="", init=False)
     field_type: type[FIELD_T] = dataclasses.field(default=None, init=False)
 
     def __post_init__(self):
+        self.field_name = ""
+        self.field_type = None
+
         if self.asserted and len(self.asserted) == 1:
             self.single_asserted = self.asserted[0]
         else:

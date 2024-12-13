@@ -8,7 +8,6 @@ to `dataclasses.field()` when defining any non-basic fields. For example:
     from dataclasses import dataclass, field
     from constrata import BinaryStruct
 
-    @dataclass(slots=True)
     class MyStruct(BinaryStruct):
         basic_field: int
         _expected_zero: short = field(init=False, **Binary(asserted=0))  # or `field(..., **BinaryPad(2))`
@@ -33,7 +32,6 @@ to initialize these fields to anything other than the asserted value. For exampl
     from dataclasses import dataclass
     from constrata import BinaryStruct, binary
 
-    @dataclass(slots=True)
     class MyStruct(BinaryStruct):
         basic_field: int
         _expected_zero: short = binary(asserted=0)  # or `binary_pad(2)`
@@ -99,6 +97,7 @@ def binary(
     metadata = Binary(fmt, asserted, unpack_func, pack_func, bit_count, should_skip_func)
     if metadata["metadata"]["binary"].single_asserted is not None:
         field_kwargs.setdefault("init", False)
+        field_kwargs.setdefault("default", metadata["metadata"]["binary"].single_asserted)
     return dataclasses.field(**field_kwargs, metadata=metadata["metadata"])
 
 
@@ -216,8 +215,8 @@ def BinaryPad(
     should_skip_func: tp.Callable[[bool, dict[str, tp.Any]], bool] = None,
 ) -> dict[str, tp.Any]:
     """Will assert `length` bytes of character `char`."""
-    if not isinstance(char, bytes):
-        raise TypeError("Padding `char` must be `bytes`.")
+    if not isinstance(char, bytes) or len(char) != 1:
+        raise TypeError("Padding `char` must be `bytes` with length 1.")
     pad = char * length
     return {
         "metadata": {
@@ -242,4 +241,5 @@ def binary_pad(
 ) -> dataclasses.Field:
     metadata = BinaryPad(length, char, bit_count, should_skip_func)
     field_kwargs.setdefault("init", False)  # pad is single-asserted by definition
+    field_kwargs.setdefault("default", char * length)  # pad is single-asserted by definition
     return dataclasses.field(**field_kwargs, metadata=metadata["metadata"])
