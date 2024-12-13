@@ -30,13 +30,6 @@ class BinaryStructMeta(abc.ABCMeta):
 
     def __new__(mcs, name, bases, namespace, **kwargs):
 
-        print(name)
-        for k, v in namespace.items():
-            try:
-                print(f"    {k}: {v}")
-            except AttributeError as ex:
-                print(f"    ERROR: Could not print key {k}. Error: {ex}")
-
         cls = super().__new__(mcs, name, bases, namespace)
 
         if mcs.__PRIMED_BASE_ID > 0:
