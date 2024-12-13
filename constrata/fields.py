@@ -93,7 +93,7 @@ def binary(
     bit_count: int = -1,
     should_skip_func: tp.Callable[[bool, dict[str, tp.Any]], bool] = None,
     **field_kwargs,
-) -> dataclasses.Field:
+):
     metadata = Binary(fmt, asserted, unpack_func, pack_func, bit_count, should_skip_func)
     if metadata["metadata"]["binary"].single_asserted is not None:
         field_kwargs.setdefault("init", False)
@@ -151,7 +151,7 @@ def binary_string(
     rstrip_null: bool = True,
     should_skip_func: tp.Callable[[bool, dict[str, tp.Any]], bool] = None,
     **field_kwargs,
-) -> dataclasses.Field:
+):
     metadata = BinaryString(fmt_or_byte_size, asserted, unpack_func, pack_func, encoding, rstrip_null, should_skip_func)
     if metadata["metadata"]["binary"].single_asserted is not None:
         field_kwargs.setdefault("init", False)
@@ -201,7 +201,7 @@ def binary_array(
     pack_func: tp.Callable[[FIELD_T], PRIMITIVE_FIELD_TYPING] = None,
     should_skip_func: tp.Callable[[bool, dict[str, tp.Any]], bool] = None,
     **field_kwargs,
-) -> dataclasses.Field:
+):
     metadata = BinaryArray(length, element_fmt, asserted, unpack_func, pack_func, should_skip_func)
     if metadata["metadata"]["binary"].single_asserted is not None:
         field_kwargs.setdefault("init", False)
@@ -238,7 +238,7 @@ def binary_pad(
     bit_count: int = -1,
     should_skip_func: tp.Callable[[bool, dict[str, tp.Any]], bool] = None,
     **field_kwargs,
-) -> dataclasses.Field:
+):
     metadata = BinaryPad(length, char, bit_count, should_skip_func)
     field_kwargs.setdefault("init", False)  # pad is single-asserted by definition
     field_kwargs.setdefault("default", char * length)  # pad is single-asserted by definition
