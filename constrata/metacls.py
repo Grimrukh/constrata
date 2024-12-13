@@ -56,7 +56,7 @@ class BinaryStructMeta(abc.ABCMeta):
             del_classcell = True
 
         # noinspection PyArgumentList
-        datacls = dataclass(cls, slots=True)
+        datacls = dataclass(cls, slots=True, kw_only=True)
 
         if mcs.__PRIMED_BASE_ID > 0:
             raise ValueError("Dataclass was not wrapped successfully with `dataclass`.")
