@@ -10,6 +10,7 @@ from .fields import *
 
 
 @tp.dataclass_transform(
+    kw_only_default=True,  # IDEs struggle with false positives for field defaults without this
     field_specifiers=(
         binary,
         binary_string,
