@@ -18,7 +18,7 @@ from .fields import *
     ),
 )
 class BinaryStructMeta(abc.ABCMeta):
-    """Base metaclass for Soulstruct dataclasses that automatically apply `slots=True`.
+    """Base metaclass for `BinaryStruct` that automatically applies `slots=True`.
 
     May be subclassed to hijack certain constructor overloads.
     """
