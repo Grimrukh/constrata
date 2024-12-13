@@ -8,9 +8,9 @@ if tp.TYPE_CHECKING:
 
 
 class ByteOrder(StrEnum):
-    NativeAutoAligned = "@"
+    NativeAutoAligned = "@"  # standard size, native alignment
     NativeNotAutoAligned = "="  # standard size, no alignment
-    LittleEndian = "<"  # default
+    LittleEndian = "<"  # generally default
     BigEndian = ">"
     Network = "!"  # big-endian
 
@@ -22,7 +22,7 @@ class ByteOrder(StrEnum):
 
     @classmethod
     def big_endian_bool(cls, is_big_endian: bool):
-        """Utility shortcut for switching between big/little endian based on a bool (common in game formats)."""
+        """Utility shortcut for switching between big/little endian based on a bool."""
         return cls.BigEndian if is_big_endian else cls.LittleEndian
 
     @classmethod

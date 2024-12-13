@@ -24,7 +24,7 @@ class BinaryWriter(BinaryBase):
     _array: bytearray
     reserved: dict[str, tuple[int, str]]
 
-    def __init__(self, byte_order=ByteOrder.LittleEndian, long_varints: bool = True):
+    def __init__(self, byte_order=ByteOrder.LittleEndian, long_varints: bool = None):
         super().__init__(byte_order, long_varints)
         self._array = bytearray()
         self.reserved = {}

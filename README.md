@@ -13,6 +13,9 @@ pip install constrata
 
 ## Usage
 
+### NOTE: If you have updated from v1.0, note that `dataclass` wrappers are now automatically applied to `BinaryStruct`
+### subclasses. You must not add an additional `dataclass` decorator yourself.
+
 Define a subclass of `constrata.BinaryStruct`, and specify the binary format, size, asserted values, and 
 unpacking/packing functions of fields using `constrata` field functions with these basic arguments:
 - `binary(fmt, asserted)`

@@ -8,7 +8,6 @@ import copy
 import dataclasses
 import io
 import logging
-import struct
 import typing as tp
 from types import GenericAlias
 
@@ -203,7 +202,7 @@ class BinaryStruct(metaclass=BinaryStructMeta):
 
         if byte_order is None:
             if isinstance(data, BinaryReader):
-                byte_order = data.default_byte_order
+                byte_order = data.byte_order
             else:
                 byte_order = cls.DEFAULT_BYTE_ORDER
         elif isinstance(byte_order, str):
@@ -222,11 +221,11 @@ class BinaryStruct(metaclass=BinaryStructMeta):
         old_byte_order = None
         if isinstance(data, (bytes, bytearray, io.BufferedIOBase)):
             # Transient reader; we can set the byte order directly.
-            reader = BinaryReader(data, default_byte_order=byte_order)
+            reader = BinaryReader(data, default_byte_order=byte_order, long_varints=long_varints)
         elif isinstance(data, BinaryReader):
             # Save old byte order if it is different.
-            if byte_order != data.default_byte_order:
-                old_byte_order = data.default_byte_order
+            if byte_order != data.byte_order:
+                old_byte_order = data.byte_order
             reader = data  # assumes it is at the correct offset already
         else:
             raise TypeError("`data` must be `bytes`, `bytearray`, or opened `io.BufferedIOBase`.")
@@ -234,7 +233,7 @@ class BinaryStruct(metaclass=BinaryStructMeta):
         cls_name = cls.__name__
         bit_reader = BitFieldReader()
 
-        full_fmt = cls.get_full_fmt()
+        full_fmt = cls.get_full_fmt(long_varints)
         careful_unpack_mode = any(metadata.should_skip_func is not None for metadata in cls._FIELD_METADATA)
 
         if not careful_unpack_mode:
@@ -311,7 +310,7 @@ class BinaryStruct(metaclass=BinaryStructMeta):
 
         # Restore old byte order if it was changed from a passed-in `BinaryReader`.
         if old_byte_order is not None:
-            reader.default_byte_order = old_byte_order
+            reader.byte_order = old_byte_order
 
         return instance
 
@@ -340,7 +339,7 @@ class BinaryStruct(metaclass=BinaryStructMeta):
                 # New bit field (or new bit field type).
                 full_fmt += metadata.fmt
                 used_bits = metadata.bit_count
-                bit_field_max = struct.calcsize(metadata.fmt) * 8
+                bit_field_max = BinaryReader.calcsize_parsed("<" + metadata.fmt) * 8
             elif used_bits + metadata.bit_count > bit_field_max:
                 # Bit field type is correct but will be exhausted; new chunk needed.
                 full_fmt += metadata.fmt
@@ -399,7 +398,7 @@ class BinaryStruct(metaclass=BinaryStructMeta):
         `to_writer(writer, reserve_obj=obj, byte_order=byte_order, long_varints=long_varints)` with that struct.
         """
         if byte_order is None and writer is not None:
-            byte_order = writer.default_byte_order
+            byte_order = writer.byte_order
         if long_varints is None and writer is not None:
             long_varints = writer.long_varints
         binary_struct = cls.from_object(obj, **field_values)
@@ -482,20 +481,20 @@ class BinaryStruct(metaclass=BinaryStructMeta):
         old_byte_order = None
         if byte_order is None:
             if writer is not None:
-                byte_order = writer.default_byte_order
+                byte_order = writer.byte_order
             else:
                 byte_order = self.DEFAULT_BYTE_ORDER
 
             # Warn about byte order override (from struct or default).
             if writer is not None:
-                if writer.default_byte_order != byte_order:
+                if writer.byte_order != byte_order:
                     _LOGGER.warning(
                         f"Existing writer passed to `{self.cls_name}.to_writer()` has default byte order "
-                        f"{writer.default_byte_order}, but this struct wants to use {byte_order}. Using this struct's "
+                        f"{writer.byte_order}, but this struct wants to use {byte_order}. Using this struct's "
                         f"byte order temporarily."
                     )
-                    old_byte_order = writer.default_byte_order
-                    writer.default_byte_order = byte_order
+                    old_byte_order = writer.byte_order
+                    writer.byte_order = byte_order
 
         if long_varints is None and writer is not None:
             long_varints = writer.long_varints
@@ -503,7 +502,7 @@ class BinaryStruct(metaclass=BinaryStructMeta):
         # if any `varint` or `varuint` fields are encountered.
 
         if writer is None:
-            writer = BinaryWriter(byte_order)  # NOTE: `BinaryWriter.long_varints` not used here
+            writer = BinaryWriter(byte_order, long_varints)
 
         cls_name = self.cls_name
         bit_writer = BitFieldWriter()
@@ -520,9 +519,7 @@ class BinaryStruct(metaclass=BinaryStructMeta):
             nonlocal full_fmt
             if not full_fmt:
                 return 0
-            if long_varints is None:
-                return struct.calcsize(full_fmt)
-            return writer.calcsize(full_fmt)
+            return writer.calcsize(full_fmt, byte_order, long_varints)  # not parsed yet
 
         for field, field_type, field_metadata, field_packer, field_value in zip(
             self._FIELDS, self._FIELD_TYPES, self._FIELD_METADATA, self._FIELD_PACKERS, field_values.values()
@@ -558,7 +555,7 @@ class BinaryStruct(metaclass=BinaryStructMeta):
                     reserve_offset = start_offset + get_fmt_size()
                     reserve_fmt = byte_order.value + field_metadata.fmt
                     writer.mark_reserved_offset(field.name, reserve_fmt, reserve_offset, obj=reserve_obj)
-                    null_size = writer.calcsize(reserve_fmt)
+                    null_size = writer.calcsize_parsed(reserve_fmt)
                     struct_input.append(b"\0" * null_size)
                     full_fmt += f"{null_size}s"
                     continue
@@ -585,7 +582,7 @@ class BinaryStruct(metaclass=BinaryStructMeta):
             raise
 
         if old_byte_order is not None:
-            writer.default_byte_order = byte_order
+            writer.byte_order = byte_order
 
         return writer  # may have remaining unfilled fields (any non-auto-computed field with value `None`)
 
@@ -701,22 +698,25 @@ class BinaryStruct(metaclass=BinaryStructMeta):
 
     @classmethod
     def get_size(cls, byte_order: ByteOrder = None, long_varints: bool = None) -> int:
-        """Get full format of this struct, then calculate its size using the given `byte_order` and `long_varints`.
+        """Get full format of this struct, then calculate its size using the given `byte_order` (defaulting to class
+        default) and `long_varints` (must be passed if variable integer fields are present).
 
-        `byte_order` will default to `LittleEndian`; only a change to `NativeAutoAligned` would potentially change the
-        size of the struct, which is unlikely for game formats. `long_varints` may be omitted, but an error will be
-        raised if any `varint` or `varuint` fields are used in the struct.
+        Note that only a change of `byte_order` to `ByteOrder.NativeAutoAligned` would potentially change the
+        size of the struct.
         """
         byte_order = byte_order or cls.DEFAULT_BYTE_ORDER
-        full_fmt = byte_order.value + cls.get_full_fmt()
+        full_fmt = byte_order.value + cls.get_full_fmt(long_varints)
         if "v" in full_fmt or "V" in full_fmt:
             if long_varints is None:
-                raise ValueError(f"Struct `{cls.__name__}` has varint fields. `long_varints` must be set to get size.")
+                raise ValueError(
+                    f"Struct `{cls.__name__}` has varint fields. `long_varints` must be passed in "
+                    f"to calculate format size."
+                )
             if long_varints:
                 full_fmt = full_fmt.replace("v", "q").replace("V", "Q")
             else:
                 full_fmt = full_fmt.replace("v", "i").replace("V", "I")
-        return struct.calcsize(full_fmt)
+        return BinaryReader.calcsize_parsed(full_fmt)
 
     @staticmethod
     def join_bytes(struct_iterable: tp.Iterable[BinaryStruct]) -> bytes:

@@ -8,7 +8,6 @@ import io
 import struct
 import typing as tp
 from contextlib import contextmanager
-from functools import lru_cache
 from pathlib import Path
 
 from constrata.utilities import read_chars_from_buffer
@@ -30,7 +29,7 @@ class BinaryReader(BinaryBase):
         self,
         buffer: str | Path | bytes | bytearray | io.BufferedIOBase | BinaryReader,
         default_byte_order=ByteOrder.LittleEndian,
-        long_varints=True,
+        long_varints: bool = None,
     ):
         super().__init__(default_byte_order, long_varints)
 
@@ -219,12 +218,6 @@ class BinaryReader(BinaryBase):
     @property
     def position_hex(self) -> str:
         return hex(self.buffer.tell())
-
-    @staticmethod
-    @lru_cache(maxsize=256)
-    def calcsize(parsed_fmt: str):
-        """LRU-decorated method for calculating struct size after parsing it."""
-        return struct.calcsize(parsed_fmt)
 
     def print_labeled_position(self, label: str, as_hex=False):
         print(f"{label} position: {self.position_hex if as_hex else self.position}")
