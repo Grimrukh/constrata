@@ -221,7 +221,7 @@ class BinaryStruct(metaclass=BinaryStructMeta):
         old_byte_order = None
         if isinstance(data, (bytes, bytearray, io.BufferedIOBase)):
             # Transient reader; we can set the byte order directly.
-            reader = BinaryReader(data, default_byte_order=byte_order, long_varints=long_varints)
+            reader = BinaryReader(data, byte_order=byte_order, long_varints=long_varints)
         elif isinstance(data, BinaryReader):
             # Save old byte order if it is different.
             if byte_order != data.byte_order:

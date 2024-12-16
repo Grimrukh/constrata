@@ -28,10 +28,10 @@ class BinaryReader(BinaryBase):
     def __init__(
         self,
         buffer: str | Path | bytes | bytearray | io.BufferedIOBase | BinaryReader,
-        default_byte_order=ByteOrder.LittleEndian,
+        byte_order=ByteOrder.LittleEndian,
         long_varints: bool = None,
     ):
-        super().__init__(default_byte_order, long_varints)
+        super().__init__(byte_order, long_varints)
 
         self.buffer = None
         self.path = None
