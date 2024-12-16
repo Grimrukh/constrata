@@ -13,6 +13,7 @@ import typing as tp
 from constrata.field_types.type_info import PRIMITIVE_FIELD_TYPING
 
 FIELD_T = tp.TypeVar("FIELD_T")  # can be any type thanks to `unpack_func` option
+BYTE_ORDER_CHARS = tuple("@=<>!")
 
 
 @dataclasses.dataclass(slots=True)
@@ -34,6 +35,11 @@ class BinaryMetadata(tp.Generic[FIELD_T]):
     field_type: type[FIELD_T] = dataclasses.field(default=None, init=False)
 
     def __post_init__(self):
+        if self.fmt is not None and self.fmt.startswith(BYTE_ORDER_CHARS):
+            raise ValueError(
+                f"Individual binary field format string cannot start with byte order character: {self.fmt}"
+            )
+
         self.field_name = ""
         self.field_type = None
 

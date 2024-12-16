@@ -20,7 +20,6 @@ from constrata.streams import BinaryReader, BinaryWriter, BitFieldReader, BitFie
 
 _LOGGER = logging.getLogger("constrata")
 
-
 OBJ_T = tp.TypeVar("OBJ_T")
 
 
@@ -45,6 +44,7 @@ class BinaryStruct(metaclass=BinaryStructMeta):
 
     # Subclasses can set their own default byte order, which defaults to LittleEndian here.
     DEFAULT_BYTE_ORDER: tp.ClassVar[ByteOrder] = ByteOrder.LittleEndian
+
     # There is no class default for `long_varints`. Any structs that uses these must specify it explicitly with an
     # argument or via a passed-in `BinaryWriter`.
 
@@ -272,8 +272,10 @@ class BinaryStruct(metaclass=BinaryStructMeta):
                     if struct_output is None:
                         field_value = field_type(bit_reader.read(reader, field_metadata.bit_count, field_metadata.fmt))
                     else:
-                        field_value = field_type(bit_reader.read_list_buffer(
-                            struct_output, field_metadata.bit_count, field_metadata.fmt)
+                        field_value = field_type(
+                            bit_reader.read_list_buffer(
+                                struct_output, field_metadata.bit_count, field_metadata.fmt
+                            )
                         )
                 except Exception as ex:
                     _LOGGER.error(f"Error occurred while trying to unpack bit field `{cls_name}.{field.name}`: {ex}")
@@ -396,11 +398,14 @@ class BinaryStruct(metaclass=BinaryStructMeta):
     ) -> BinaryWriter:
         """Convenience shortcut for creating a struct instance from `obj` and `field_values`, then immediately calling
         `to_writer(writer, reserve_obj=obj, byte_order=byte_order, long_varints=long_varints)` with that struct.
+
+        Note that if `writer` is given, `byte_order` and `long_varints` must be `None`.
         """
-        if byte_order is None and writer is not None:
-            byte_order = writer.byte_order
-        if long_varints is None and writer is not None:
-            long_varints = writer.long_varints
+        if writer is not None:
+            if byte_order is not None:
+                raise ValueError("Cannot specify `byte_order` when an existing `BinaryWriter` is given.")
+            if long_varints is not None:
+                raise ValueError("Cannot specify `long_varints` when an existing `BinaryWriter` is given.")
         binary_struct = cls.from_object(obj, **field_values)
         return binary_struct.to_writer(writer, reserve_obj=obj, byte_order=byte_order, long_varints=long_varints)
 
@@ -470,6 +475,8 @@ class BinaryStruct(metaclass=BinaryStructMeta):
         `reserve_prefix = None` (default), it will default to the name of this class. The main use of setting it
         manually is for nested structs and lists of structs, which will keep chaining their names together and include
         list/tuple indices where relevant (handled automatically).
+
+        `byte_order` and `long_varints` cannot be given if an existing `writer` is given.
         """
         if not self._STRUCT_INITIALIZED:
             self._initialize_struct_cls()
@@ -477,31 +484,15 @@ class BinaryStruct(metaclass=BinaryStructMeta):
         if reserve_obj is None:
             reserve_obj = self
 
-        # Preference for byte order: argument, passed-in `writer`, or `cls.DEFAULT_BYTE_ORDER`.
-        old_byte_order = None
-        if byte_order is None:
-            if writer is not None:
-                byte_order = writer.byte_order
-            else:
-                byte_order = self.DEFAULT_BYTE_ORDER
-
-            # Warn about byte order override (from struct or default).
-            if writer is not None:
-                if writer.byte_order != byte_order:
-                    _LOGGER.warning(
-                        f"Existing writer passed to `{self.cls_name}.to_writer()` has default byte order "
-                        f"{writer.byte_order}, but this struct wants to use {byte_order}. Using this struct's "
-                        f"byte order temporarily."
-                    )
-                    old_byte_order = writer.byte_order
-                    writer.byte_order = byte_order
-
-        if long_varints is None and writer is not None:
-            long_varints = writer.long_varints
-        # `long_varints` may be left as None (e.g. for formats that do not care about it) but an error will be raised
-        # if any `varint` or `varuint` fields are encountered.
-
-        if writer is None:
+        if writer is not None:
+            if byte_order is not None:
+                raise ValueError("Cannot specify `byte_order` when an existing `BinaryWriter` is given.")
+            if long_varints is not None:
+                raise ValueError("Cannot specify `long_varints` when an existing `BinaryWriter` is given.")
+        else:
+            # Create new writer. `byte_order` has a class default, but `long_varints` must be specified if any fields
+            # contain 'v' or 'V' variable int formats.
+            byte_order = byte_order or self.DEFAULT_BYTE_ORDER
             writer = BinaryWriter(byte_order, long_varints)
 
         cls_name = self.cls_name
@@ -519,7 +510,7 @@ class BinaryStruct(metaclass=BinaryStructMeta):
             nonlocal full_fmt
             if not full_fmt:
                 return 0
-            return writer.calcsize(full_fmt, byte_order, long_varints)  # not parsed yet
+            return writer.calcsize(full_fmt)  # byte order and long varints parsed inside call
 
         for field, field_type, field_metadata, field_packer, field_value in zip(
             self._FIELDS, self._FIELD_TYPES, self._FIELD_METADATA, self._FIELD_PACKERS, field_values.values()
@@ -553,9 +544,8 @@ class BinaryStruct(metaclass=BinaryStructMeta):
                     # Reserved for custom external filling, as it requires data beyond this struct's scope (even just to
                     # choose one of multiple provided asserted values). Current byte order is used.
                     reserve_offset = start_offset + get_fmt_size()
-                    reserve_fmt = byte_order.value + field_metadata.fmt
-                    writer.mark_reserved_offset(field.name, reserve_fmt, reserve_offset, obj=reserve_obj)
-                    null_size = writer.calcsize_parsed(reserve_fmt)
+                    writer.mark_reserved_offset(field.name, field_metadata.fmt, reserve_offset, obj=reserve_obj)
+                    null_size = writer.calcsize(field_metadata.fmt)
                     struct_input.append(b"\0" * null_size)
                     full_fmt += f"{null_size}s"
                     continue
@@ -580,9 +570,6 @@ class BinaryStruct(metaclass=BinaryStructMeta):
                 f"    Struct input: {struct_input}"
             )
             raise
-
-        if old_byte_order is not None:
-            writer.byte_order = byte_order
 
         return writer  # may have remaining unfilled fields (any non-auto-computed field with value `None`)
 
