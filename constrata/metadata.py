@@ -63,6 +63,7 @@ class BinaryMetadata(tp.Generic[FIELD_T]):
         if self.asserted:
             error_msg = f"Field '{self.field_name}' read value {{value}} is not an asserted value: {self.asserted}"
             func += "    if value not in metadata.asserted:\n"
+            func += f"        from constrata.exceptions import BinaryFieldValueError\n"
             func += f"        raise BinaryFieldValueError(\"{error_msg}\".format(value=value))\n"
         func += "    return value"
         exec(func)
@@ -75,6 +76,7 @@ class BinaryMetadata(tp.Generic[FIELD_T]):
         if self.asserted:
             error_msg = f"Field '{self.field_name}' value {{value}} is not an asserted value: {self.asserted}"
             func += "    if value not in metadata.asserted:\n"
+            func += f"        from constrata.exceptions import BinaryFieldValueError\n"
             func += f"        raise BinaryFieldValueError(\"{error_msg}\".format(value=value))\n"
         if self.pack_func:
             func += "    value = metadata.pack_func(value)\n"
