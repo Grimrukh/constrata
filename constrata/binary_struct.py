@@ -8,13 +8,14 @@ import copy
 import dataclasses
 import io
 import logging
+import struct
 import typing as tp
 from types import GenericAlias
 
 from constrata.byte_order import ByteOrder
 from constrata.field_types.type_info import *
 from constrata.exceptions import BinaryFieldTypeError, BinaryFieldValueError
-from constrata.metadata import FIELD_T, BinaryMetadata, BinaryArrayMetadata
+from constrata.metadata import BinaryMetadata, BinaryStringMetadata, BinaryArrayMetadata
 from constrata.metacls import BinaryStructMeta
 from constrata.streams import BinaryReader, BinaryWriter, BitFieldReader, BitFieldWriter
 
@@ -26,20 +27,32 @@ OBJ_T = tp.TypeVar("OBJ_T")
 class BinaryStruct(metaclass=BinaryStructMeta):
     """Dataclass that supports automatic reading/writing from packed binary data."""
 
-    # Caches for class binary information, each constructed on first use.
-    _STRUCT_INITIALIZED: tp.ClassVar[bool] = False
-    _FIELDS: tp.ClassVar[tuple[dataclasses.Field, ...] | None] = None
-    _FIELD_TYPES: tp.ClassVar[tuple[type[FIELD_T], ...] | None] = None
-    _FIELD_METADATA: tp.ClassVar[tuple[BinaryMetadata, ...] | None] = None
-    _FIELD_PACKERS: tp.ClassVar[tuple[tp.Callable, ...] | None] = None
-    _FIELD_UNPACKERS: tp.ClassVar[tuple[tp.Callable, ...] | None] = None
+    # Caches for class binary information, each constructed on first use and immutable thereafter.
+    __STRUCT_INITIALIZED: tp.ClassVar[bool] = False
+    _FIELDS: tp.ClassVar[tuple[dataclasses.Field, ...]]  # from `dataclass`; cannot be `None`
+    _BINARY_FIELDS: tp.ClassVar[tuple[dataclasses.Field, ...] | None] = None  # filtered from `_FIELDS`
+    _BFIELD_TYPES: tp.ClassVar[tuple[type, ...] | None] = None  # all types supported via custom packers/unpackers
+    _BFIELD_METADATA: tp.ClassVar[tuple[BinaryMetadata, ...] | None] = None
+    _BFIELD_INIT: tp.ClassVar[tuple[bool, ...] | None] = None
+    _STRUCTS: tp.ClassVar[dict[tuple[ByteOrder, bool | None], struct.Struct]] = {}  # (byte_order, long_varints)
+
+    _HAS_VARINTS: tp.ClassVar[bool] = False
+    _HAS_DYNAMIC_FIELDS: tp.ClassVar[bool] = False
+    _HAS_BIT_FIELDS: tp.ClassVar[bool] = False
+    _HAS_ENCODING: tp.ClassVar[bool] = False
+    _HAS_ARRAY: tp.ClassVar[bool] = False
+    _HAS_CUSTOM_UNPACK: tp.ClassVar[bool] = False
+    _HAS_CUSTOM_PACK: tp.ClassVar[bool] = False
+    _USE_FAST_UNPACK: tp.ClassVar[bool] = False
+    _USE_FAST_PACK: tp.ClassVar[bool] = False
 
     # Optional dictionary for subclass use that maps field type names to default metadata factories.
     # Example:
     #   `{'Vector3': lambda: BinaryArrayMetadata(3, '3f', unpack_func=Vector3)}`
     # This allows pure annotated fields like `position: Vector3` to be used without needing to specify field metadata.
-    # Note that metadta `pack_func` may not be required if the custom type defines an `__iter__` method that converts it
-    # to a list of primitive values supported by `struct.pack()` (e.g. such that `pack(*v3) == pack(v3.x, v3.y, v3.z)`).
+    # Note that metadata `pack_func` may not be required if the custom type defines an `__iter__` method that converts
+    # it to a list of primitive values supported by `struct.pack()` (e.g. such that
+    # `pack(*v3) == pack(v3.x, v3.y, v3.z)`).
     METADATA_FACTORIES: tp.ClassVar[dict[str, tp.Callable[[], BinaryMetadata]]] = {}
 
     # Subclasses can set their own default byte order, which defaults to LittleEndian here.
@@ -50,61 +63,59 @@ class BinaryStruct(metaclass=BinaryStructMeta):
 
     # No instance fields in this base class.
 
-    def __init_subclass__(cls, **kwargs) -> None:
-        if "unpackers" in kwargs:
-            cls._CUSTOM_UNPACKERS = copy.copy(kwargs.pop("unpackers"))
-        if kwargs:
-            raise TypeError(f"Invalid keyword arguments for `BinaryStruct` subclass: {kwargs}. ")
-        super(BinaryStruct, cls).__init_subclass__()
-
     def __post_init__(self) -> None:
-        if not self._STRUCT_INITIALIZED:
-            self._initialize_struct_cls()
+        if not self.__STRUCT_INITIALIZED:
+            self._initialize_binary_metadata()
 
         # Set single-asserted fields to their default values, regardless of `init` setting.
-        for field, field_metadata in zip(self._FIELDS, self._FIELD_METADATA, strict=True):
+        for field, field_metadata in zip(self._BINARY_FIELDS, self._BFIELD_METADATA, strict=True):
             if field_metadata.single_asserted is not None:
                 setattr(self, field.name, field_metadata.single_asserted)
 
     @property
-    def cls_name(self):
+    def cls_name(self) -> str:
+        """Convenience instance property that returns the class name."""
         return self.__class__.__name__
 
     @classmethod
-    def _initialize_struct_cls(cls):
-        if not dataclasses.is_dataclass(cls):
-            raise TypeError(f"BinaryStruct subclass `{cls.__name__}` is missing a `dataclass` decorator.")
+    def _initialize_binary_metadata(cls: type[BinaryStruct]) -> None:
+        """One-off class call that scans all fields and constructs their binary metadata."""
+        if not hasattr(cls, "__dataclass_fields__"):
+            raise TypeError(
+                f"BinaryStruct subclass `{cls.__name__}` has not been processed as a dataclass. Was its metaclass "
+                f"replaced?"
+            )
 
         cls_name = cls.__name__
-        binary_dc_fields = cls.get_binary_fields()
-        if not binary_dc_fields:
+        binary_fields = cls.get_binary_fields()
+        if not binary_fields:
             raise TypeError(f"`BinaryStruct` subclass `{cls_name}` has no binary fields.")
 
         all_metadata = []
-        all_packers = []
-        all_unpackers = []
 
-        for dc_field, field_type in zip(binary_dc_fields, cls.get_binary_field_types()):
+        for binary_field, field_type in zip(binary_fields, cls.get_binary_field_types()):
 
+            # Resolve field type name and validate `list` as the only generic alias.
             if isinstance(field_type, GenericAlias):
                 if field_type.__origin__ is not list:
                     raise BinaryFieldTypeError(
-                        dc_field, cls_name, "Binary fields types cannot be `tuple`. Use `list[type]`."
+                        binary_field, cls_name, "Binary fields types cannot be `tuple`. Use `list[type]`."
                     )
                 field_type_name = "list"
             else:
                 field_type_name = field_type.__name__
 
-            metadata = dc_field.metadata.get("binary", None)  # type: BinaryMetadata | None
+            metadata = binary_field.metadata.get("binary", None)  # type: BinaryMetadata | None
+
             if metadata is None:
-                # NOTE: We can't add new keys to `field.metadata` now, but store it in `_FIELD_METADATA`.
+                # NOTE: We can't add a new 'binary' key to `field.metadata` now. We store it in `_BFIELD_METADATA`.
 
                 if field_type_name in cls.METADATA_FACTORIES:
                     try:
                         metadata = cls.METADATA_FACTORIES[field_type_name]()
                     except Exception as ex:
                         raise BinaryFieldTypeError(
-                            dc_field,
+                            binary_field,
                             cls_name,
                             f"Failed to construct default metadata for field type `{field_type_name}`: {ex}",
                         )
@@ -121,70 +132,54 @@ class BinaryStruct(metaclass=BinaryStructMeta):
                         fmt = PRIMITIVE_FIELD_FMTS[field_type]
                     except KeyError:
                         raise BinaryFieldTypeError(
-                            dc_field,
+                            binary_field,
                             cls_name,
                             f"Field with non-primitive type `{field_type.__name__}` must have `fmt` metadata.",
                         )
 
                     metadata = BinaryMetadata(fmt)
-                    metadata.field_type = field_type
 
-            metadata.field_name = dc_field.name
-            metadata.field_type = field_type
-
-            if metadata.fmt is None:
-                if isinstance(metadata, BinaryArrayMetadata):
-                    if (
-                        not isinstance(field_type, GenericAlias)
-                        or field_type.__origin__ != list
-                        or len(field_type.__args__) != 1
-                    ):
-                        raise BinaryFieldTypeError(
-                            dc_field, cls_name, f"Type hint for binary array field must be `list[type]`."
-                        )
-                    element_type = field_type.__args__[0]
-                    if element_type in PRIMITIVE_FIELD_FMTS:
-                        metadata.fmt = f"{metadata.length}{PRIMITIVE_FIELD_FMTS[element_type]}"
-                    else:
-                        raise BinaryFieldTypeError(
-                            dc_field,
-                            cls_name,
-                            f"Array field with non-primitive element type `{element_type.__name__}` "
-                            f"must have `fmt` metadata.",
-                        )
-                else:
-                    if field_type in PRIMITIVE_FIELD_FMTS:
-                        metadata.fmt = PRIMITIVE_FIELD_FMTS[field_type]
-                    else:
-                        raise BinaryFieldTypeError(
-                            dc_field,
-                            cls_name,
-                            f"Field with non-primitive, non-BinaryStruct type `{field_type.__name__}` must have `fmt` "
-                            f"metadata.",
-                        )
-
-            if field_type not in PRIMITIVE_FIELD_FMTS:
-                # Use custom non-primitive type to unpack and pack (iter).
-                if metadata.unpack_func is None:
-                    metadata.unpack_func = field_type
-                if metadata.pack_func is None:
-                    # Just validate `__iter__` presence.
-                    if not hasattr(field_type, "__iter__"):
-                        raise BinaryFieldTypeError(
-                            dc_field,
-                            cls_name,
-                            f"Non-primitive field type `{field_type.__name__}` must have `unpack_func` metadata or "
-                            f"implement `__iter__` to enable default handling."
-                        )
-
+            metadata.finish_metadata(binary_field, field_type, cls_name)
             all_metadata.append(metadata)
-            all_unpackers.append(metadata.get_unpacker())
-            all_packers.append(metadata.get_packer())
 
-        cls._FIELD_METADATA = tuple(all_metadata)
-        cls._FIELD_UNPACKERS = tuple(all_unpackers)
-        cls._FIELD_PACKERS = tuple(all_packers)
-        cls._STRUCT_INITIALIZED = True
+        cls._BFIELD_METADATA = tuple(all_metadata)
+        cls._BFIELD_INIT = tuple(field.init for field in cls._BINARY_FIELDS)
+
+        # Construct full/native alignment 32-bit and 64-bit default structs.
+        # One of these will be used unless any fields have `should_skip_func` set.
+        v_fmt = cls._get_full_fmt()
+        short_fmt = v_fmt.replace("v", "i").replace("V", "I")
+        long_fmt = v_fmt.replace("v", "q").replace("V", "Q")
+
+        # Don't just use parent class's dictionary!
+        cls._STRUCTS = {}
+
+        for byte_order in ByteOrder:
+            if "v" in v_fmt or "V" in v_fmt:
+                cls._HAS_VARINTS = True
+                cls._STRUCTS[byte_order, False] = struct.Struct(byte_order.value + short_fmt)
+                cls._STRUCTS[byte_order, True] = struct.Struct(byte_order.value + long_fmt)
+            else:
+                cls._STRUCTS[byte_order, None] = struct.Struct(byte_order.value + v_fmt)
+
+        cls._HAS_DYNAMIC_FIELDS = any(metadata.should_skip_func is not None for metadata in cls._BFIELD_METADATA)
+        cls._HAS_BIT_FIELDS = any(metadata.bit_count != -1 for metadata in cls._BFIELD_METADATA)
+        cls._HAS_ENCODING = any(
+            isinstance(metadata, BinaryStringMetadata) and metadata.encoding for metadata in cls._BFIELD_METADATA
+        )
+        cls._HAS_ARRAY = any(isinstance(metadata, BinaryArrayMetadata) for metadata in cls._BFIELD_METADATA)
+        cls._HAS_CUSTOM_UNPACK = any(metadata.unpack_func for metadata in cls._BFIELD_METADATA)
+        cls._HAS_CUSTOM_PACK = any(metadata.pack_func for metadata in cls._BFIELD_METADATA)
+        is_simple = not (
+            cls._HAS_DYNAMIC_FIELDS
+            or cls._HAS_BIT_FIELDS
+            or cls._HAS_ENCODING
+            or cls._HAS_ARRAY
+        )
+        cls._USE_FAST_UNPACK = is_simple and not cls._HAS_CUSTOM_UNPACK
+        cls._USE_FAST_PACK = is_simple and not cls._HAS_CUSTOM_PACK
+
+        cls.__STRUCT_INITIALIZED = True  # enabled now to prevent recursive calls in `get_full_fmt()` below
 
     @classmethod
     def from_bytes(
@@ -197,8 +192,8 @@ class BinaryStruct(metaclass=BinaryStructMeta):
 
         Note that field defaults do not matter here, as ALL fields must be unpacked.
         """
-        if not cls._STRUCT_INITIALIZED:
-            cls._initialize_struct_cls()
+        if not cls.__STRUCT_INITIALIZED:
+            cls._initialize_binary_metadata()
 
         if byte_order is None:
             if isinstance(data, BinaryReader):
@@ -231,29 +226,59 @@ class BinaryStruct(metaclass=BinaryStructMeta):
             raise TypeError("`data` must be `bytes`, `bytearray`, or opened `io.BufferedIOBase`.")
 
         cls_name = cls.__name__
-        bit_reader = BitFieldReader()
+        bit_reader = BitFieldReader() if cls._HAS_BIT_FIELDS else None
 
-        full_fmt = cls.get_full_fmt(long_varints)
-        careful_unpack_mode = any(metadata.should_skip_func is not None for metadata in cls._FIELD_METADATA)
-
-        if not careful_unpack_mode:
+        if not cls._HAS_DYNAMIC_FIELDS:
             try:
-                struct_output = list(reversed(reader.unpack(full_fmt)))
-            except Exception as ex:
-                _LOGGER.error(f"Could not unpack struct fmt for `{cls_name}`: {full_fmt}. Error: {ex}")
+                full_struct = cls._STRUCTS[byte_order, long_varints]
+            except KeyError:
+                _LOGGER.error(
+                    f"No struct exists for `{cls_name}` with byte order {byte_order} and long_varints {long_varints}. "
+                    f"If any 'v' or 'V' fields exist, `long_varints` must be specified."
+                )
                 raise
+
+            if cls._USE_FAST_UNPACK:
+                values = reader.unpack_struct(full_struct)
+                init_values = {}
+                non_init_values = {}
+                for field, value, is_init in zip(cls._BINARY_FIELDS, values, cls._BFIELD_INIT, strict=True):
+                    (init_values if is_init else non_init_values).__setitem__(field.name, value)
+
+                # noinspection PyArgumentList
+                instance = cls(**init_values)
+                for field_name, value in non_init_values.items():
+                    setattr(instance, field_name, value)
+
+                # Restore old byte order if it was changed from a passed-in `BinaryReader`.
+                if old_byte_order is not None:
+                    reader.byte_order = old_byte_order
+
+                return instance
+
+            # Set up queue of struct outputs for individual parsing (bit fields, custom unpackers, etc.).
+            try:
+                struct_output = list(reversed(reader.unpack_struct(full_struct)))
+            except Exception as ex:
+                _LOGGER.error(
+                    f"Could not unpack struct fmt for `{cls_name}`: {full_struct.format} (size {full_struct.size}). "
+                    f"Error: {ex}"
+                )
+                raise
+
         else:
+            # Fields must be unpacked one by one, as some may be skipped based on previous field values.
             struct_output = None
 
         init_values = {}
         non_init_values = {}
         all_field_values = {}
 
-        for field, field_type, field_metadata, field_unpacker in zip(
-            cls._FIELDS, cls._FIELD_TYPES, cls._FIELD_METADATA, cls._FIELD_UNPACKERS, strict=True
+        for field, field_type, field_metadata in zip(
+            cls._BINARY_FIELDS, cls._BFIELD_TYPES, cls._BFIELD_METADATA, strict=True
         ):
 
-            if field_metadata.bit_count == -1 and not bit_reader.empty:
+            if field_metadata.bit_count == -1 and bit_reader and not bit_reader.empty:
                 # Last bit field was not finished. Discard bits.
                 bit_reader.clear()
 
@@ -268,6 +293,8 @@ class BinaryStruct(metaclass=BinaryStructMeta):
 
             if field_metadata.bit_count != -1:
                 # Read bit field and cast to field type (e.g. `bool` for 1-bit fields).
+                if not bit_reader:
+                    bit_reader = BitFieldReader()  # first time use
                 try:
                     if struct_output is None:
                         field_value = field_type(bit_reader.read(reader, field_metadata.bit_count, field_metadata.fmt))
@@ -289,9 +316,9 @@ class BinaryStruct(metaclass=BinaryStructMeta):
                 # Read normal field.
                 try:
                     if struct_output is None:
-                        field_value = field_unpacker(list(reader.unpack(field_metadata.fmt)))
+                        field_value = field_metadata.unpack(list(reader.unpack(field_metadata.fmt)), byte_order)
                     else:
-                        field_value = field_unpacker(struct_output)
+                        field_value = field_metadata.unpack(struct_output, byte_order)
                 except Exception as ex:
                     _LOGGER.error(
                         f"Error occurred while trying to unpack field `{cls_name}.{field.name}`: {ex}\n"
@@ -317,27 +344,20 @@ class BinaryStruct(metaclass=BinaryStructMeta):
         return instance
 
     @classmethod
-    def get_full_fmt(cls, long_varints: bool = None, field_values: dict[str, tp.Any] = None) -> str:
-        """Constructs full `BinaryStruct` fmt string, which is complicated only by bit fields.
-
-        If `long_varints` and/or `field_values` are given, `should_skip_func` will be checked for each field (e.g. when
-        packing). This can't be done when unpacking, though, and this method is therefore not used.
-        """
-        if not cls._STRUCT_INITIALIZED:
-            cls._initialize_struct_cls()
-
+    def _get_full_fmt(cls) -> str:
+        """Constructs full `BinaryStruct` fmt string, which is complicated only by bit fields."""
         full_fmt = ""
         used_bits = 0
         bit_field_max = 0
-        for field, metadata in zip(cls._FIELDS, cls._FIELD_METADATA):
-            if field_values is not None and metadata.should_skip_func is not None:
-                if metadata.should_skip_func(long_varints, field_values):
-                    continue  # skip field
+        for field, metadata in zip(cls._BINARY_FIELDS, cls._BFIELD_METADATA):
             if metadata.bit_count == -1:
                 full_fmt += metadata.fmt
                 used_bits = 0
                 bit_field_max = 0
-            elif not full_fmt or bit_field_max == 0 or metadata.fmt != full_fmt[-1]:
+                continue
+
+            # Handle bit field:
+            if not full_fmt or bit_field_max == 0 or metadata.fmt != full_fmt[-1]:
                 # New bit field (or new bit field type).
                 full_fmt += metadata.fmt
                 used_bits = metadata.bit_count
@@ -365,10 +385,10 @@ class BinaryStruct(metaclass=BinaryStructMeta):
 
         Also has the advantage of bypassing type checker for the `int` size subtypes like `byte`, `short`, etc.
         """
-        if not cls._STRUCT_INITIALIZED:
-            cls._initialize_struct_cls()
+        if not cls.__STRUCT_INITIALIZED:
+            cls._initialize_binary_metadata()
 
-        for field in cls._FIELDS:
+        for field in dataclasses.fields(cls):  # not just binary fields
             if not field.init:
                 if field.name in field_values:
                     raise ValueError(f"Cannot specify non-init binary field `{cls.__name__}.{field.name}`.")
@@ -416,7 +436,7 @@ class BinaryStruct(metaclass=BinaryStructMeta):
         will be used. Otherwise, only fields that do not start with an underscore will be used.
         """
         obj_fields = {f.name for f in dataclasses.fields(obj_type)} if dataclasses.is_dataclass(obj_type) else None
-        for field in self._FIELDS:
+        for field in dataclasses.fields(self):  # not just binary fields
             if obj_fields is not None:
                 if field.name not in obj_fields or field.name in init_kwargs:
                     continue  # skip
@@ -427,6 +447,7 @@ class BinaryStruct(metaclass=BinaryStructMeta):
                 raise ValueError(f"Field `{self.cls_name}.{field.name}` is None. Cannot set to object.")
             init_kwargs[field.name] = value
 
+        # noinspection PyArgumentList
         return obj_type(**init_kwargs)
 
     @classmethod
@@ -478,8 +499,8 @@ class BinaryStruct(metaclass=BinaryStructMeta):
 
         `byte_order` and `long_varints` cannot be given if an existing `writer` is given.
         """
-        if not self._STRUCT_INITIALIZED:
-            self._initialize_struct_cls()
+        if not self.__STRUCT_INITIALIZED:
+            self._initialize_binary_metadata()
 
         if reserve_obj is None:
             reserve_obj = self
@@ -499,7 +520,7 @@ class BinaryStruct(metaclass=BinaryStructMeta):
         bit_writer = BitFieldWriter()
 
         # Get all field values.
-        field_values = {field.name: getattr(self, field.name, None) for field in self._FIELDS}
+        field_values = {field.name: getattr(self, field.name, None) for field in self._BINARY_FIELDS}
 
         # Unlike when unpacking, we can use `field_values` immediately to check skips and construct `full_fmt` as we go.
         full_fmt = ""  # for reserving
@@ -512,8 +533,8 @@ class BinaryStruct(metaclass=BinaryStructMeta):
                 return 0
             return writer.calcsize(full_fmt)  # byte order and long varints parsed inside call
 
-        for field, field_type, field_metadata, field_packer, field_value in zip(
-            self._FIELDS, self._FIELD_TYPES, self._FIELD_METADATA, self._FIELD_PACKERS, field_values.values()
+        for field, field_type, field_metadata, field_value in zip(
+            self._BINARY_FIELDS, self._BFIELD_TYPES, self._BFIELD_METADATA, field_values.values()
         ):
 
             if field.metadata.get("NOT_BINARY", False):
@@ -554,7 +575,7 @@ class BinaryStruct(metaclass=BinaryStructMeta):
                     field_value = field_metadata.single_asserted
 
             try:
-                field_packer(struct_input, field_value)
+                field_metadata.pack(struct_input, field_value)
                 full_fmt += field_metadata.fmt
             except Exception as ex:
                 _LOGGER.error(f"Error occurred while writing binary field `{field.name}`: {ex}")
@@ -634,7 +655,7 @@ class BinaryStruct(metaclass=BinaryStructMeta):
         lines = [
             f"{self.cls_name}(",
         ]
-        for field in self._FIELDS:
+        for field in self._BINARY_FIELDS:
             if not field.repr:
                 continue  # explicitly excluded
             value = getattr(self, field.name, None)
@@ -646,31 +667,35 @@ class BinaryStruct(metaclass=BinaryStructMeta):
         lines.append(")")
         return "\n".join(lines)
 
+    @classmethod
+    def get_fields(cls):
+        return dataclasses.fields(cls)
+
     def get_binary_field_values(self) -> dict[str, tp.Any]:
         """Get all current binary field values, unless it has a single asserted value."""
         field_values = {}
-        for field, metadata in zip(self.get_binary_fields(), self._FIELD_METADATA):
+        for field, metadata in zip(self.get_binary_fields(), self._BFIELD_METADATA):
             if metadata.single_asserted is None:
                 field_values[field.name] = getattr(self, field.name, None)
         return field_values
 
     @classmethod
     def get_binary_fields(cls) -> tuple[dataclasses.Field, ...]:
-        if cls._FIELDS is not None:
-            return cls._FIELDS
-        cls._FIELDS = tuple(
-            field for field in dataclasses.fields(cls)
+        if cls._BINARY_FIELDS is not None:
+            return cls._BINARY_FIELDS
+        cls._BINARY_FIELDS = tuple(
+            field for field in cls.get_fields()
             if not field.metadata.get("NOT_BINARY", False)
         )
-        return cls._FIELDS
+        return cls._BINARY_FIELDS
 
     @classmethod
-    def get_binary_field_types(cls) -> tuple[type[FIELD_T], ...]:
-        if cls._FIELD_TYPES is not None:
-            return cls._FIELD_TYPES
+    def get_binary_field_types(cls) -> tuple[type, ...]:
+        if cls._BFIELD_TYPES is not None:
+            return cls._BFIELD_TYPES
         all_type_hints = tp.get_type_hints(cls)
-        cls._FIELD_TYPES = tuple(all_type_hints[field.name] for field in cls.get_binary_fields())
-        return cls._FIELD_TYPES
+        cls._BFIELD_TYPES = tuple(all_type_hints[field.name] for field in cls.get_binary_fields())
+        return cls._BFIELD_TYPES
 
     @classmethod
     def get_binary_field_names(cls) -> tuple[str, ...]:
@@ -678,32 +703,23 @@ class BinaryStruct(metaclass=BinaryStructMeta):
 
     @classmethod
     def get_binary_field_and_type(cls, field_name: str) -> tuple[dataclasses.Field, tp.Type]:
-        for field, field_type in zip(cls._FIELDS, cls._FIELD_TYPES):
+        for field, field_type in zip(cls._BINARY_FIELDS, cls._BFIELD_TYPES):
             if field.name == field_name:
                 return field, field_type
         raise KeyError(f"Invalid field for `{cls.__name__}`: {field_name}")
 
     @classmethod
     def get_size(cls, byte_order: ByteOrder = None, long_varints: bool = None) -> int:
-        """Get full format of this struct, then calculate its size using the given `byte_order` (defaulting to class
-        default) and `long_varints` (must be passed if variable integer fields are present).
+        """Get cached size of struct, based on native alignment and long varints.
 
-        Note that only a change of `byte_order` to `ByteOrder.NativeAutoAligned` would potentially change the
-        size of the struct.
+        Assumes no fields are skipped.
         """
-        byte_order = byte_order or cls.DEFAULT_BYTE_ORDER
-        full_fmt = byte_order.value + cls.get_full_fmt(long_varints)
-        if "v" in full_fmt or "V" in full_fmt:
-            if long_varints is None:
-                raise ValueError(
-                    f"Struct `{cls.__name__}` has varint fields. `long_varints` must be passed in "
-                    f"to calculate format size."
-                )
-            if long_varints:
-                full_fmt = full_fmt.replace("v", "q").replace("V", "Q")
-            else:
-                full_fmt = full_fmt.replace("v", "i").replace("V", "I")
-        return BinaryReader.calcsize_parsed(full_fmt)
+        if not cls.__STRUCT_INITIALIZED:
+            cls._initialize_binary_metadata()
+
+        if byte_order is None:
+            byte_order = ByteOrder.LittleEndian  # no alignment
+        return cls._STRUCTS[byte_order, long_varints].size
 
     @staticmethod
     def join_bytes(struct_iterable: tp.Iterable[BinaryStruct]) -> bytes:

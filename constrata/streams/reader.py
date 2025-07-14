@@ -57,7 +57,7 @@ class BinaryReader(BinaryBase):
                 )
             self.buffer = io.BytesIO(data)
 
-    def unpack(self, fmt, offset=None, relative_offset=False, asserted=None) -> tuple:
+    def unpack(self, fmt: str, offset=None, relative_offset=False, asserted=None) -> tuple:
         """Unpack appropriate number of bytes from `buffer` using `fmt` string from the given (or current) `offset`.
 
         Args:
@@ -85,7 +85,24 @@ class BinaryReader(BinaryBase):
             self.buffer.seek(initial_offset)
         return data
 
-    def unpack_value(self, fmt, offset=None, relative_offset=False, asserted=None) -> bool | int | float | bytes:
+    def unpack_struct(self, builtin_struct: struct.Struct, offset=None, relative_offset=False, asserted=None) -> tuple:
+        """Unpack from `buffer` using precompiled `struct.Struct` object.
+
+        This is more efficient than the potentially repeated calls to `struct.calcsize` and `struct.unpack` required by
+        the raw `unpack()` or `unpack_value()` methods.
+        """
+        initial_offset = self.buffer.tell() if offset is not None else None
+        if offset is not None:
+            self.buffer.seek(initial_offset + offset if relative_offset else offset)
+        raw_data = self.buffer.read(builtin_struct.size)
+        data = builtin_struct.unpack(raw_data)
+        if asserted is not None and data != asserted:
+            raise AssertionError(f"Unpacked data {repr(data)} does not equal asserted data {repr(asserted)}.")
+        if initial_offset is not None:
+            self.buffer.seek(initial_offset)
+        return data
+
+    def unpack_value(self, fmt: str, offset=None, relative_offset=False, asserted=None) -> bool | int | float | bytes:
         """Call `unpack()` and return the single value returned.
 
         If `asserted` is given, an `AssertionError` will be raised if the unpacked value is not equal to `asserted`.

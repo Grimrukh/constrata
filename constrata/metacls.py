@@ -19,7 +19,9 @@ from .fields import *
     ),
 )
 class BinaryStructMeta(abc.ABCMeta):
-    """Base metaclass for `BinaryStruct` that automatically applies `slots=True`.
+    """Base metaclass for `BinaryStruct` that automatically applies `dataclass(slots=True, kw_only=True)` decorator.
+
+    This saves users from having to apply that decorator every time `BinaryStruct` is subclassed.
 
     May be subclassed to hijack certain constructor overloads.
     """
@@ -46,9 +48,9 @@ class BinaryStructMeta(abc.ABCMeta):
 
         # TRICK: We copy '__classcell__' from `namespace`, if it exists, while we construct the new class. This
         # is necessary because `dataclass` has no choice but to construct a new class that uses `__slots__`, which
-        # will break classes that user the zero-argument form of `super()` (they rely on the 'magical context' of
-        # the classcell to get the correct class).
-        # This trick works because `dataclasses._add_slots()` uses the class `__dict__`
+        # will break classes that use the zero-argument form of `super()` (they rely on the 'magical context' of
+        # the classcell to get the correct class). This trick works because `dataclasses._add_slots()` uses the class
+        # `__dict__`.
 
         del_classcell = False
         if "__classcell__" in namespace:
