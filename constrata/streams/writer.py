@@ -30,10 +30,21 @@ class BinaryWriter(BinaryBase):
         self.reserved = {}
 
     def pack(self, fmt: str, *values):
+        """Pack values at current offset using `struct.pack` with format `fmt`."""
         self._array += struct.pack(self.parse_fmt(fmt), *values)
 
     def pack_at(self, offset: int, fmt: str, *values):
+        """Pack values at specified offset using `struct.pack` with format `fmt`."""
         packed = struct.pack(self.parse_fmt(fmt), *values)
+        self._array[offset:offset + len(packed)] = packed
+
+    def pack_struct(self, builtin_struct: struct.Struct, *values):
+        """Pack values at current offset using a pre-compiled `struct.Struct` object."""
+        self._array += builtin_struct.pack(*values)
+
+    def pack_struct_at(self, offset: int, builtin_struct: struct.Struct, *values):
+        """Pack values at specified offset using a pre-compiled `struct.Struct` object."""
+        packed = builtin_struct.pack(*values)
         self._array[offset:offset + len(packed)] = packed
 
     def pack_z_string(self, value: str, encoding="utf-8"):

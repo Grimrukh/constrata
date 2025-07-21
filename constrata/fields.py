@@ -66,7 +66,6 @@ def Binary(
     unpack_func: tp.Callable[[PRIMITIVE_FIELD_TYPING], FIELD_T] = None,
     pack_func: tp.Callable[[FIELD_T], PRIMITIVE_FIELD_TYPING] = None,
     bit_count: int = -1,
-    should_skip_func: tp.Callable[[bool, dict[str, tp.Any]], bool] = None
 ):
     if fmt is str or fmt is bytes:
         raise TypeError("Cannot use `Binary()` for `bytes` or `str` fields. Use `BinaryString()` instead.")
@@ -80,9 +79,7 @@ def Binary(
     elif asserted is not None and not isinstance(asserted, tuple):
         asserted = (asserted,)
 
-    return {"metadata": {"binary": BinaryMetadata(
-        fmt, asserted, unpack_func, pack_func, bit_count, should_skip_func
-    )}}
+    return {"metadata": {"binary": BinaryMetadata(fmt, asserted, unpack_func, pack_func, bit_count)}}
 
 
 def binary(
@@ -91,10 +88,9 @@ def binary(
     unpack_func: tp.Callable[[PRIMITIVE_FIELD_TYPING], FIELD_T] = None,
     pack_func: tp.Callable[[FIELD_T], PRIMITIVE_FIELD_TYPING] = None,
     bit_count: int = -1,
-    should_skip_func: tp.Callable[[bool, dict[str, tp.Any]], bool] = None,
     **field_kwargs,
 ):
-    metadata = Binary(fmt, asserted, unpack_func, pack_func, bit_count, should_skip_func)
+    metadata = Binary(fmt, asserted, unpack_func, pack_func, bit_count)
     if metadata["metadata"]["binary"].single_asserted is not None:
         field_kwargs.setdefault("init", False)
         field_kwargs.setdefault("default", metadata["metadata"]["binary"].single_asserted)
@@ -108,7 +104,6 @@ def BinaryString(
     pack_func: tp.Callable[[FIELD_T], PRIMITIVE_FIELD_TYPING] = None,
     encoding: str = None,
     rstrip_null: bool = True,
-    should_skip_func: tp.Callable[[bool, dict[str, tp.Any]], bool] = None,
 ):
     if isinstance(fmt_or_byte_size, int):
         fmt = f"{fmt_or_byte_size}s"
@@ -137,7 +132,7 @@ def BinaryString(
             asserted = tuple(s.rstrip(b"\0") for s in asserted)
 
     return {"metadata": {"binary": BinaryStringMetadata(
-        fmt, asserted, unpack_func, pack_func, bit_count=-1, should_skip_func=should_skip_func,
+        fmt, asserted, unpack_func, pack_func, bit_count=-1,
         encoding=encoding, rstrip_null=rstrip_null,
     )}}
 
@@ -149,10 +144,9 @@ def binary_string(
     pack_func: tp.Callable[[FIELD_T], PRIMITIVE_FIELD_TYPING] = None,
     encoding: str = None,
     rstrip_null: bool = True,
-    should_skip_func: tp.Callable[[bool, dict[str, tp.Any]], bool] = None,
     **field_kwargs,
 ):
-    metadata = BinaryString(fmt_or_byte_size, asserted, unpack_func, pack_func, encoding, rstrip_null, should_skip_func)
+    metadata = BinaryString(fmt_or_byte_size, asserted, unpack_func, pack_func, encoding, rstrip_null)
     if metadata["metadata"]["binary"].single_asserted is not None:
         field_kwargs.setdefault("init", False)
     return dataclasses.field(**field_kwargs, metadata=metadata["metadata"])
@@ -164,7 +158,6 @@ def BinaryArray(
     asserted: list[FIELD_T] | tuple[list[FIELD_T], ...] = None,
     unpack_func: tp.Callable[[PRIMITIVE_FIELD_TYPING], FIELD_T] = None,
     pack_func: tp.Callable[[FIELD_T], PRIMITIVE_FIELD_TYPING] = None,
-    should_skip_func: tp.Callable[[bool, dict[str, tp.Any]], bool] = None,
 ):
     if element_fmt is str or element_fmt is bytes:
         raise TypeError("Cannot use `Binary()` for bytes/string fields. Use `BinaryString()` instead.")
@@ -188,9 +181,7 @@ def BinaryArray(
             )
         asserted = (asserted,)
 
-    return {"metadata": {"binary": BinaryArrayMetadata(
-        length, fmt, asserted, unpack_func, pack_func, should_skip_func
-    )}}
+    return {"metadata": {"binary": BinaryArrayMetadata(length, fmt, asserted, unpack_func, pack_func)}}
 
 
 def binary_array(
@@ -199,10 +190,9 @@ def binary_array(
     asserted: list[FIELD_T] | tuple[list[FIELD_T], ...] = None,
     unpack_func: tp.Callable[[PRIMITIVE_FIELD_TYPING], FIELD_T] = None,
     pack_func: tp.Callable[[FIELD_T], PRIMITIVE_FIELD_TYPING] = None,
-    should_skip_func: tp.Callable[[bool, dict[str, tp.Any]], bool] = None,
     **field_kwargs,
 ):
-    metadata = BinaryArray(length, element_fmt, asserted, unpack_func, pack_func, should_skip_func)
+    metadata = BinaryArray(length, element_fmt, asserted, unpack_func, pack_func)
     if metadata["metadata"]["binary"].single_asserted is not None:
         field_kwargs.setdefault("init", False)
     return dataclasses.field(**field_kwargs, metadata=metadata["metadata"])
@@ -212,7 +202,6 @@ def BinaryPad(
     length: int,
     char=b"\0",
     bit_count: int = -1,
-    should_skip_func: tp.Callable[[bool, dict[str, tp.Any]], bool] = None,
 ) -> dict[str, tp.Any]:
     """Will assert `length` bytes of character `char`."""
     if not isinstance(char, bytes) or len(char) != 1:
@@ -225,7 +214,6 @@ def BinaryPad(
                 asserted=(pad,),
                 bit_count=bit_count,
                 rstrip_null=False,
-                should_skip_func=should_skip_func,
             ),
         },
         "repr": False,
@@ -236,10 +224,9 @@ def binary_pad(
     length: int,
     char=b"\0",
     bit_count: int = -1,
-    should_skip_func: tp.Callable[[bool, dict[str, tp.Any]], bool] = None,
     **field_kwargs,
 ):
-    metadata = BinaryPad(length, char, bit_count, should_skip_func)
+    metadata = BinaryPad(length, char, bit_count)
     field_kwargs.setdefault("init", False)  # pad is single-asserted by definition
     field_kwargs.setdefault("default", char * length)  # pad is single-asserted by definition
     return dataclasses.field(**field_kwargs, metadata=metadata["metadata"])

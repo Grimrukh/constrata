@@ -24,8 +24,7 @@ unpacking/packing functions of fields using `constrata` field functions with the
 - `binary_pad(length, char = b'\0')`
 
 Each of these field functions also have other advanced arguments, such as custom unpacking/packing callbacks
-(`unpack_func` and `pack_func`), conditional field skipping based on the values of previous fields (`should_skip_func`),
-and `rstrip_null` boolean for `binary_string()`. 
+(`unpack_func` and `pack_func`) and `rstrip_null` boolean for `binary_string()`. 
 
 All of these functions also accept standard keyword arguments for `dataclasses.field()` and pass them through directly.
 Additionally, if only a single value is `asserted` (which is always the case for `binary_pad()`), then `init=False` and

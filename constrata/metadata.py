@@ -25,21 +25,24 @@ class BinaryMetadata(tp.Generic[FIELD_T]):
 
     Dataclass is frozen to ensure cached packers/unpackers remain valid. Modifications to metadata are done only in
     `BinaryStruct._initialize_binary_metadata()`.
+
+    NOTE: Fields do not store an `offset`, as this will depend on `byte_order` and `long_varints`.
     """
 
     fmt: str
     asserted: tuple[FIELD_T, ...] = dataclasses.field(default=())
     unpack_func: tp.Callable[[PRIMITIVE_FIELD_TYPING], FIELD_T] = None
     pack_func: tp.Callable[[FIELD_T], PRIMITIVE_FIELD_TYPING] = None
-    bit_count: int = -1  # NOTE: Field is packed/unpacked manually if this is not -1.
-    should_skip_func: tp.Callable[[bool, dict[str, tp.Any]], bool] = None
+    bit_count: int = -1  # NOTE: field is packed/unpacked manually if this is not -1
 
-    # Constructed in `__post_init__` for efficiency.
-    single_asserted: FIELD_T | None = dataclasses.field(default=None, init=False)
-
-    # Assigned by `BinaryStruct` to allow better error logging below. (NOT used otherwise.)
+    # Detected and assigned manually.
+    struct_index: int = dataclasses.field(default=-1, init=False)  # index in `struct.unpack()` output
     field_name: str = dataclasses.field(default="", init=False)
     field_type: type[FIELD_T] = dataclasses.field(default=None, init=False)
+    single_asserted: FIELD_T | None = dataclasses.field(default=None, init=False)
+
+    # Not used by this non-array base class. (Faster than `isinstance(self, BinaryArrayMetadata)`.)
+    length: int = dataclasses.field(default=0, init=False)  # only used by `BinaryArrayMetadata`
 
     def __post_init__(self):
         if self.fmt is not None and self.fmt.startswith(BYTE_ORDER_CHARS):
@@ -48,15 +51,16 @@ class BinaryMetadata(tp.Generic[FIELD_T]):
                 f"Byte order is set when packing/unpacking the entire struct."
             )
 
-        # Not permitted to be set via `__init__`.
-        object.__setattr__(self, "field_name", "")
-        object.__setattr__(self, "field_type", None)
-
         single_asserted = self.asserted[0] if self.asserted and len(self.asserted) == 1 else None
         object.__setattr__(self, "single_asserted", single_asserted)
 
-    def finish_metadata(self, binary_field: dataclasses.Field, field_type: tp.Any, struct_cls_name: str):
-        """Use binary field, its type, and the struct class name (for exceptions) to fill out metadata attributes."""
+    def finish_metadata(
+        self,
+        binary_field: dataclasses.Field,
+        field_type: tp.Any,
+        struct_cls_name: str,
+    ):
+        """Use binary field, its type, offset, and the struct class name (for exceptions) to fill out metadata."""
         object.__setattr__(self, "field_name", binary_field.name)
         object.__setattr__(self, "field_type", field_type)
 
@@ -76,6 +80,15 @@ class BinaryMetadata(tp.Generic[FIELD_T]):
                         f"Non-primitive field type `{field_type.__name__}` must have `unpack_func` metadata or "
                         f"implement `__iter__` to enable default handling."
                     )
+
+    def set_struct_index(self, struct_index: int):
+        """Set the index of this field in the struct's unpacked output."""
+        if getattr(self, "struct_index", -1) != -1:
+            raise ValueError(
+                f"Cannot set `struct_index` for field '{self.field_name}' in struct '{self.field_type.__name__}' "
+                f"because it has already been set to {self.struct_index}."
+            )
+        object.__setattr__(self, "struct_index", struct_index)
     
     def set_default_fmt(self, binary_field, field_type: tp.Any, struct_cls_name: str):
 
@@ -88,25 +101,28 @@ class BinaryMetadata(tp.Generic[FIELD_T]):
                 f"Field with non-primitive, non-BinaryStruct type `{field_type.__name__}` must have `fmt` "
                 f"metadata.",
             )
-    
-    def unpack(self, struct_output: list[tp.Any], byte_order: ByteOrder) -> FIELD_T:
-        value = struct_output.pop()
-        if self.unpack_func:
-            value = self.unpack_func(value)
-        if self.asserted and value not in self.asserted:
-            raise BinaryFieldValueError(
-                f"Field '{self.field_name}' read value {{value}} is not an asserted value: {self.asserted}"
-            )
-        return value
 
-    def pack(self, struct_input: list[tp.Any], value: FIELD_T) -> None:
+    def validate(self, value: FIELD_T):
         if self.asserted and value not in self.asserted:
             raise BinaryFieldValueError(
-                    f"Field '{self.field_name}' value {{value}} is not an asserted value: {self.asserted}"
-                )
+                f"Field '{self.field_name}' unpacked value {value} is not an asserted value: {self.asserted}"
+            )
+
+    def process_from_unpack(self, unpacked_value: tp.Any, byte_order: ByteOrder) -> FIELD_T:
+        return self.unpack_func(unpacked_value) if self.unpack_func else unpacked_value
+
+    def process_to_pack(self, value: FIELD_T, byte_order: ByteOrder) -> int | float | bool | bytes:
         if self.pack_func:
             value = self.pack_func(value)
-        struct_input.append(value)
+        return value
+
+    def get_null(self, size: int) -> FIELD_T:
+        """Get 'null' value for this field type, used for reserving."""
+        if self.fmt == "?":
+            return False
+        elif self.fmt.endswith("s"):
+            return b"\0" * size
+        return 0
 
 
 @dataclasses.dataclass(slots=True, frozen=True)
@@ -119,9 +135,9 @@ class BinaryStringMetadata(BinaryMetadata):
     encoding: str | None = None
     rstrip_null: bool = True
 
-    def unpack(self, struct_output: list[tp.Any], byte_order: ByteOrder) -> FIELD_T:
+    def process_from_unpack(self, unpacked_value: bytes, byte_order: ByteOrder) -> FIELD_T:
         """Automatically decode and/or rstrip nulls from packed string/bytes as appropriate."""
-        value = struct_output.pop()
+        value = unpacked_value
         if self.encoding:
             if self.encoding == "utf16":
                 value = value.decode(byte_order.get_utf_16_encoding())
@@ -135,43 +151,28 @@ class BinaryStringMetadata(BinaryMetadata):
                 value = value.rstrip(b"\0")
         if self.unpack_func:  # called on decoded `str` if applicable
             value = self.unpack_func(value)
-        if self.asserted and value not in self.asserted:
-            raise BinaryFieldValueError(
-                f"Field '{self.field_name}' read value {value} is not an asserted value: {self.asserted}"
-            )
         return value
 
-    def pack(self, struct_input: list[tp.Any], value: FIELD_T, byte_order: ByteOrder = None) -> None:
+    def process_to_pack(self, value: FIELD_T, byte_order: ByteOrder) -> int | float | bool | bytes:
         if self.rstrip_null:  # asserted values are stripped, so value should be too
             if self.encoding is None:  # bytes
                 value = value.rstrip(b"\0")
             else:  # str
                 value = value.rstrip("\0")
-        if self.asserted and value not in self.asserted:
-            raise BinaryFieldValueError(
-                f"Field '{self.field_name}' value {value} is not an asserted value: {self.asserted}"
-            )
         if self.pack_func:
             value = self.pack_func(value)
         if self.encoding:
             if self.encoding == "utf16":
-                if byte_order is None:
-                    raise ValueError(
-                        f"Internal constrata error: "
-                        f"`byte_order` was not passed to `pack` for binary string field {self.field_name}"
-                    )
                 value = value.encode(byte_order.get_utf_16_encoding())
             else:
                 value = value.encode(self.encoding)
         # NOTE: `writer.pack()` call will automatically pad these `bytes` using `metadata.fmt`.
-        struct_input.append(value)
+        return value
 
 
 @dataclasses.dataclass(slots=True, frozen=True, init=False)
 class BinaryArrayMetadata(BinaryMetadata):
     """Dataclass field metadata for a fixed-length array of values."""
-
-    length: int = 1
 
     def __init__(
         self,
@@ -180,7 +181,6 @@ class BinaryArrayMetadata(BinaryMetadata):
         asserted: tuple[FIELD_T, ...] = (),
         unpack_func=None,
         pack_func=None,
-        should_skip_func=None,
     ):
         """Custom argument order to make `length` required."""
         object.__setattr__(self, "length", length)
@@ -188,8 +188,7 @@ class BinaryArrayMetadata(BinaryMetadata):
         object.__setattr__(self, "asserted", asserted)
         object.__setattr__(self, "unpack_func", unpack_func)
         object.__setattr__(self, "pack_func", pack_func)
-        object.__setattr__(self, "should_skip_func", should_skip_func)
-        object.__setattr__(self, "bit_count", -1)
+        object.__setattr__(self, "bit_count", -1)  # not compatible
         super(BinaryArrayMetadata, self).__post_init__()
         
     def set_default_fmt(self, binary_field, field_type: tp.Any, struct_cls_name: str):
@@ -214,22 +213,5 @@ class BinaryArrayMetadata(BinaryMetadata):
                 f"must have `fmt` metadata.",
             )
 
-    def unpack(self, struct_output: list[tp.Any], byte_order: ByteOrder) -> FIELD_T:
-        value = [struct_output.pop() for _ in range(self.length)]
-        if self.unpack_func:
-            value = self.unpack_func(value)
-        if self.asserted and value not in self.asserted:
-            raise BinaryFieldValueError(
-                f"Field '{self.field_name}' read value {value} is not an asserted value: {self.asserted}"
-            )
-        return value
-
-    def pack(self, struct_input: list[tp.Any], value: FIELD_T) -> None:
-        """We extend `struct_input` rather than appending a single packed value."""
-        if self.asserted and value not in self.asserted:
-            raise BinaryFieldValueError(
-                f"Field '{self.field_name}' value {{value}} is not an asserted value: {self.asserted}"
-            )
-        if self.pack_func:
-            value = self.pack_func(value)
-        struct_input.extend(value)
+    # Same processing methods are used. They just implicitly expect a list of values (to pass to `unpack_func`,
+    # `pack_func`, and check against `asserted`) instead of a single value.
