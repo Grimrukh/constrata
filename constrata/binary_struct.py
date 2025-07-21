@@ -691,7 +691,6 @@ class BinaryStruct(metaclass=BinaryStructMeta):
         try:
             writer.pack_struct(internal_struct, *struct_input)
         except Exception as ex:
-            print(internal_struct, struct_input)
             _LOGGER.error(
                 f"Could not pack struct fmt for `{cls_name}`: {internal_struct.format} (size {internal_struct.size}). "
                 f"Error: {ex}"
