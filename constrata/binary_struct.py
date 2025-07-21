@@ -99,8 +99,10 @@ class BinaryStruct(metaclass=BinaryStructMeta):
                     previous_full_fmt = self._fmts[None]
                     self._field_offsets[byte_order, None].append(struct.calcsize(byte_order.value + previous_full_fmt))
                     self._field_sizes[byte_order, None].append(struct.calcsize(fmt))
-                self._field_offsets[byte_order, False].append(struct.calcsize(byte_order.value + short_fmt))
-                self._field_offsets[byte_order, True].append(struct.calcsize(byte_order.value + long_fmt))
+                previous_short_fmt = self._fmts[False]
+                previous_long_fmt = self._fmts[True]
+                self._field_offsets[byte_order, False].append(struct.calcsize(byte_order.value + previous_short_fmt))
+                self._field_offsets[byte_order, True].append(struct.calcsize(byte_order.value + previous_long_fmt))
                 self._field_sizes[byte_order, False].append(struct.calcsize(short_fmt))
                 self._field_sizes[byte_order, True].append(struct.calcsize(long_fmt))
 
