@@ -263,7 +263,7 @@ class BinaryStruct(metaclass=BinaryStructMeta):
                     field_struct_index += 1
                     cls._STRUCT_METADATA.append_fmt_only(f"{run_value_count}{run_bit_fmt}")
 
-                    # Start new run.
+                    # Start new run (used immediately below).
                     run_bit_offset = 0
                     run_bit_fmt = metadata.fmt
                     run_bit_fmt_bit_size = 8 * struct.calcsize(run_bit_fmt)
@@ -292,6 +292,7 @@ class BinaryStruct(metaclass=BinaryStructMeta):
                     # Just finished a run of bit fields.
                     bit_field_size = 8 * struct.calcsize(run_bit_fmt)  # in bits
                     run_value_count = (run_bit_offset + bit_field_size - 1) // bit_field_size
+                    run_bit_offset = -1  # end run
                     field_struct_index += 1
                     cls._STRUCT_METADATA.append_fmt_only(f"{run_value_count}{run_bit_fmt}")
 
