@@ -292,14 +292,21 @@ class BinaryStruct(metaclass=BinaryStructMeta):
                     # Just finished a run of bit fields.
                     bit_field_size = 8 * struct.calcsize(run_bit_fmt)  # in bits
                     run_value_count = (run_bit_offset + bit_field_size - 1) // bit_field_size
-                    run_bit_offset = -1  # end run
                     field_struct_index += 1
                     cls._STRUCT_METADATA.append_fmt_only(f"{run_value_count}{run_bit_fmt}")
+                    run_bit_offset = -1  # end run
 
                 # This non-bit field is a single or `metadata.length`-sized `struct` input/output.
                 metadata.set_struct_index(field_struct_index)
                 field_struct_index += metadata.length or 1
                 cls._STRUCT_METADATA.append_field_fmt(metadata.fmt)
+
+        # Flush a trailing run of bit fields.
+        if run_bit_offset >= 0:
+            bit_field_size = 8 * struct.calcsize(run_bit_fmt)
+            run_value_count = (run_bit_offset + bit_field_size - 1) // bit_field_size
+            cls._STRUCT_METADATA.append_fmt_only(f"{run_value_count}{run_bit_fmt}")
+            run_bit_offset = -1  # for completion
 
         # Check if class is simple (primitive fields only).
         for metadata in cls._BFIELD_METADATA:
@@ -689,6 +696,10 @@ class BinaryStruct(metaclass=BinaryStructMeta):
                     run_bits = 0
                 # Standard single value.
                 struct_input.append(packing_value)
+
+        # Flush a trailing run of bit fields.
+        if run_index != -1:
+            struct_input.append(run_bits)
 
         # Single pack call.
         try:
